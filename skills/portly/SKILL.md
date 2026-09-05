@@ -7,7 +7,7 @@ description: Manage persistent projects and temporary local processes with the P
 
 Use the `portly` CLI as the primary interface. Every command launches Portly.app automatically if needed; this is a state-changing side effect even for `status` when the app was closed.
 
-If `portly` is not available on `PATH`, use the onboarding-installed CLI at `$HOME/.local/bin/portly`, or the copy bundled with the app at `/Applications/Portly.app/Contents/Resources/portly-cli`.
+If `portly` is not available on `PATH`, use the onboarding-installed CLI at `$HOME/.local/bin/portly`, or the copy bundled with the app at `/Applications/Portly Custom.app/Contents/Resources/portly-cli`.
 
 ## Inspect first
 
@@ -73,7 +73,7 @@ Portly evaluates total project footprint every two seconds. Three consecutive sa
 6. Poll `portly status --json` until `running` and `healthy`.
 7. Verify the meaningful URL and inspect `portly logs <project/server> --tail 100 --json`.
 
-Register projects with `portly add-project --name <name> --path <absolute-path> --icon <sf-symbol> --color '<hex>' --json`.
+Register projects with `portly add-project --name <name> --path <absolute-path> --icon <category/icon-name> --color '<hex>' --json`.
 
 Portly injects `PORT`, `PORTLY=1`, and `PORTLY_SERVER`. The configured port drives health checks; a process that does not listen there will not become healthy.
 

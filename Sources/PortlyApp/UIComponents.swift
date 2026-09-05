@@ -62,12 +62,12 @@ extension MemoryDiagnosticSeverity {
         }
     }
 
-    var systemImage: String {
+    var icon: AppIcon {
         switch self {
-        case .healthy: return "checkmark.circle.fill"
-        case .notice: return "info.circle.fill"
-        case .warning: return "exclamationmark.triangle.fill"
-        case .critical: return "exclamationmark.octagon.fill"
+        case .healthy: return .checkCircle
+        case .notice: return .info
+        case .warning: return .warning
+        case .critical: return .warningOctagon
         }
     }
 }
@@ -147,12 +147,25 @@ struct StartStopButton: View {
                 runtime.start()
             }
         } label: {
-            Image(systemName: runtime.isRunning ? "stop.fill" : "play.fill")
-                .contentTransition(.symbolEffect(.replace))
-                .font(symbolSize.map { .system(size: $0) })
+            NucleoIconView(runtime.isRunning ? .stop : .play, size: (symbolSize ?? 12) + 1)
+                .contentTransition(.opacity)
         }
         .animation(Motion.state, value: runtime.isRunning)
-        .help(runtime.isRunning ? "Stop" : "Start")
+        .disabled(!runtime.isRunning && !runtime.canStart)
+        .help(runtime.isRunning ? "Stop" : runtime.canStart ? "Start" : "Install the dependencies first")
+    }
+}
+
+/// Lets a button switch between two primitive styles without two buttons.
+struct AnyPrimitiveButtonStyle: PrimitiveButtonStyle {
+    private let make: (Configuration) -> AnyView
+
+    init<S: PrimitiveButtonStyle>(_ style: S) {
+        make = { AnyView(style.makeBody(configuration: $0)) }
+    }
+
+    func makeBody(configuration: Configuration) -> some View {
+        make(configuration)
     }
 }
 

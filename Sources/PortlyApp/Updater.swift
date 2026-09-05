@@ -1,28 +1,7 @@
-import Sparkle
+import Foundation
 
-/// Owns Sparkle for the whole application lifetime.
-///
-/// The feed and EdDSA public key live in Info.plist so release builds can be
-/// generated without putting update-signing secrets in the repository.
-final class PortlyUpdater: NSObject, SPUUpdaterDelegate {
-    static let shared = PortlyUpdater()
-
-    private(set) lazy var controller = SPUStandardUpdaterController(
-        startingUpdater: true,
-        updaterDelegate: self,
-        userDriverDelegate: nil
-    )
-
-    private override init() {
-        super.init()
-        _ = controller
-    }
-
-    func checkForUpdates() {
-        controller.checkForUpdates(nil)
-    }
-
-    func updaterWillRelaunchApplication(_ updater: SPUUpdater) {
-        Supervisor.shared.prepareForUpdaterRelaunch()
-    }
+/// This private fork ships no auto-updater: the upstream Sparkle feed would
+/// silently replace the custom build with the stock Portly release.
+enum PortlyUpdater {
+    static let isAvailable = false
 }

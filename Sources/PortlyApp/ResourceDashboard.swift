@@ -185,7 +185,7 @@ struct ResourceDashboard: View {
                 Text("Live · 2 s")
                     .foregroundStyle(.primary)
             } icon: {
-                Image(systemName: "dot.radiowaves.left.and.right")
+                NucleoIconView(.signal, size: 14)
                     .foregroundStyle(.green)
             }
                 .font(PortlyTypography.bodyMedium)
@@ -200,11 +200,11 @@ struct ResourceDashboard: View {
     }
 
     private var emptyState: some View {
-        ContentUnavailableView(
-            "No active processes",
-            systemImage: "chart.xyaxis.line",
-            description: Text("Start a server to collect live resource data.")
-        )
+        ContentUnavailableView {
+            NucleoLabel("No active processes", icon: .chartLine, size: 30)
+        } description: {
+            Text("Start a server to collect live resource data.")
+        }
         .frame(maxWidth: .infinity, minHeight: 360)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
@@ -218,35 +218,35 @@ struct ResourceDashboard: View {
                 title: "Managed footprint",
                 value: bytes(totalFootprint),
                 detail: "Owned, compressed, or swapped",
-                systemImage: "memorychip",
+                icon: .memory,
                 color: .orange
             )
             overviewCard(
                 title: "Managed resident",
                 value: bytes(totalResident),
                 detail: "Currently in RAM",
-                systemImage: "memorychip.fill",
+                icon: .memory,
                 color: .blue
             )
             overviewCard(
                 title: "CPU",
                 value: totalCPU.formatted(.number.precision(.fractionLength(1))) + "%",
                 detail: "Across all cores",
-                systemImage: "cpu",
+                icon: .cpu,
                 color: .purple
             )
             overviewCard(
                 title: "Processes",
                 value: String(processRows.count),
                 detail: "Managed across \(serverRows.count) active servers",
-                systemImage: "square.stack.3d.up",
+                icon: .layers,
                 color: .cyan
             )
             overviewCard(
                 title: "Machine memory",
                 value: bytes(physicalMemoryBytes),
                 detail: "Managed services currently resident: \(managedResidentPercent)",
-                systemImage: "desktopcomputer",
+                icon: .desktop,
                 color: .green
             )
         }
@@ -281,8 +281,7 @@ struct ResourceDashboard: View {
         let externalProcess = externalProcess(for: diagnostic)
         return VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 10) {
-                Image(systemName: diagnostic.severity.systemImage)
-                    .font(.system(size: 15, weight: .semibold))
+                NucleoIconView(diagnostic.severity.icon, size: 16)
                     .foregroundStyle(color)
                     .frame(width: 32, height: 32)
                     .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
@@ -309,7 +308,7 @@ struct ResourceDashboard: View {
                     .background(color.opacity(0.1), in: Capsule())
             }
 
-            Label(diagnostic.fix, systemImage: "wrench.and.screwdriver")
+            NucleoLabel(diagnostic.fix, icon: .wrench)
                 .font(PortlyTypography.body)
                 .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -333,12 +332,12 @@ struct ResourceDashboard: View {
                             pendingExternalStop = externalProcess
                         } label: {
                             if stoppingProcessIDs.contains(externalProcess.terminationPID) {
-                                Label("Stopping…", systemImage: "hourglass")
+                                NucleoLabel("Stopping…", icon: .hourglass)
                             } else {
-                                Label(
+                                NucleoLabel(
                                     externalProcess.terminationPID == externalProcess.pid
                                         ? "Stop process" : "Stop dev session",
-                                    systemImage: "stop.fill"
+                                    icon: .stop
                                 )
                             }
                         }
@@ -357,7 +356,7 @@ struct ResourceDashboard: View {
                         Button {
                             openActivityMonitor()
                         } label: {
-                            Label("Open Activity Monitor", systemImage: "arrow.up.forward.app")
+                            NucleoLabel("Open Activity Monitor", icon: .externalLink)
                         }
                         .buttonStyle(.bordered)
                     }
@@ -390,7 +389,7 @@ struct ResourceDashboard: View {
     private func externalProcessDetails(_ process: ExternalProcessSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 8) {
-                Label("Outside Portly", systemImage: "arrow.up.right.square")
+                NucleoLabel("Outside Portly", icon: .externalLink)
                 Spacer()
                 Text("Footprint \(bytes(process.memoryBytes)) · RAM \(bytes(process.residentMemoryBytes))")
                     .monospacedDigit()
@@ -434,17 +433,17 @@ struct ResourceDashboard: View {
 
             HStack(spacing: 12) {
                 if let directory = process.workingDirectory {
-                    Label(directory, systemImage: "folder")
+                    NucleoLabel(directory, icon: .folder)
                         .lineLimit(1)
                         .help(directory)
                 }
                 if !process.listeningPorts.isEmpty {
-                    Label(
+                    NucleoLabel(
                         process.listeningPorts.map { ":\($0)" }.joined(separator: ", "),
-                        systemImage: "network"
+                        icon: .network
                     )
                 } else {
-                    Label("No listening port · cannot be moved as a server", systemImage: "network.slash")
+                    NucleoLabel("No listening port · cannot be moved as a server", icon: .networkOff)
                 }
             }
             .font(PortlyTypography.metadata)
@@ -503,13 +502,12 @@ struct ResourceDashboard: View {
         title: String,
         value: String,
         detail: String,
-        systemImage: String,
+        icon: AppIcon,
         color: Color
     ) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 14, weight: .semibold))
+                NucleoIconView(icon, size: 15)
                     .foregroundStyle(color)
                     .frame(width: 34, height: 34)
                     .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 9, style: .continuous))

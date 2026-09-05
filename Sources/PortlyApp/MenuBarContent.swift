@@ -87,8 +87,7 @@ struct MenuBarContent: View {
     private func projectSection(_ project: Project) -> some View {
         VStack(alignment: .leading, spacing: 1) {
             HStack(spacing: 6) {
-                Image(systemName: project.icon)
-                    .font(.system(size: 11))
+                NucleoIconView(LegacyProjectIcons.resolve(project.icon), size: 12)
                     .foregroundStyle(Color(hex: project.color))
                     .frame(width: 13)
                 Text(project.name)
@@ -98,7 +97,7 @@ struct MenuBarContent: View {
                 Button {
                     supervisor.startProject(project.id)
                 } label: {
-                    Image(systemName: "play.fill").font(.system(size: 9))
+                    NucleoIconView(.play, size: 10)
                 }
                 .buttonStyle(.borderless)
                 .help("Start every server in \(project.name)")
@@ -106,7 +105,7 @@ struct MenuBarContent: View {
                 Button {
                     supervisor.stopProject(project.id)
                 } label: {
-                    Image(systemName: "stop.fill").font(.system(size: 9))
+                    NucleoIconView(.stop, size: 10)
                 }
                 .buttonStyle(.borderless)
                 .help("Stop every server in \(project.name)")
@@ -186,7 +185,7 @@ private struct MenuBarServerRow: View {
                 .font(.system(size: 12))
                 .lineLimit(1)
 
-            if let port = runtime.config.port {
+            if let port = runtime.effectivePort {
                 Text(":\(String(port))")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.secondary)

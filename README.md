@@ -6,6 +6,28 @@ Use persistent projects for long-lived, reusable services. Use top-level **Tempo
 
 Portly requires macOS 14 or newer and Swift 6.
 
+## This fork: Portly Custom
+
+Private fork of [Melvynx/portly](https://github.com/Melvynx/portly) that keeps everything Portly does (supervised dev servers, ports, resources, memory guard, CLI, agent skill) and adds a coding cockpit on top:
+
+- **Coding sessions per project** — each project in the sidebar can hold several sessions; a session is 1 to 5 terminals split right/down (⌘D / ⇧⌘D), resizable, zoomable (⇧⌘↩), with per-session text size (⌘+ / ⌘−). Layouts persist in `~/.config/portly/studio.json`; shells respawn when a session is reopened.
+- **PATH** — launched from the Dock, macOS gives an app almost no PATH; Portly asks your interactive login shell once and hands its PATH (pnpm, bun, fnm…) to every server, terminal and install it starts.
+- **Relaunch** — every session respawns at launch and the last selection comes back; Claude Code panes carry a session id (`--session-id`) and resume their conversation (`--resume`) after a quit or a reboot. A *Reset* button in the pane header starts a fresh chat.
+- **Agent presets** — new terminals start Claude Code (bypass permissions by default), Codex, Cursor Agent, Gemini CLI, a custom command, or a bare shell. Settings → Code.
+- **Terminal titles** — the pane header follows the OSC title the CLI sets (Claude Code names its tasks) and the working directory.
+- **Quick terminal** — one scratch shell per project floating top-right, toggled with ⌘J from any screen.
+- **Environment files** — every `.env*` at the project root in a floating panel (⇧⌘E) with dotenv colouring (keys, strings, comments, `${vars}`, unclosed quotes flagged), "create .env from .env.example" and the reverse.
+- **Keep awake** — the mug in the toolbar holds the Mac awake (power assertion, plus `pmset disablesleep` with an administrator so a closed lid keeps Wi-Fi and agents alive). It releases by itself once every terminal has been quiet for N minutes, after 90 s offline, or under 10% battery, and always on quit. The first activation asks for your password once to install a sudo rule limited to those two `pmset` commands.
+- **System access** — an onboarding card and Settings → General rows for Full Disk Access and Accessibility; agents started from Portly inherit them. `build.sh` signs with the Apple Development identity so the grants survive rebuilds.
+- **Ports** — a busy configured port makes the server start on the next free one (PORT and explicit `-p/--port` rewritten), with a banner to take the configured port back; every port the process tree listens on shows in the sidebar and the Open menu.
+- **Activity** — a spinner next to a session while any of its terminals produces output, a dot once it went quiet and you have not looked yet; Claude Code's animated title glyph is stripped.
+- **Dependencies** — a Node server whose `node_modules` is missing shows an *Install dependencies* button (pnpm/bun/yarn/npm detected from the lockfile) and greys out *Start* until the install finishes.
+- **Drop zone** — drop files anywhere on a project screen to copy them to its root, then "Tell the agent" types the file list into the focused terminal.
+- **Nucleo glyph-duo icons** everywhere, and a project icon picker that searches 3 400 glyphs in French or English.
+- No Sparkle auto-update and no launch telemetry: the upstream feed would replace this build.
+
+Build and install with `./build.sh --run` (installs `/Applications/Portly Custom.app`, the `portly` CLI and the agent skill).
+
 ## Smart resource dashboard
 
 The native **Resources** screen samples every Portly-owned process tree every two seconds and keeps a five-minute memory history. It shows physical footprint, resident RAM, CPU, project trends, and the current user's heaviest processes running outside Portly. Configure the optional global project limit and per-project inherit/off/custom overrides in **Settings → Memory**. A project restarts after three consecutive over-limit footprint samples, then sampling starts fresh on the replacement processes.

@@ -104,6 +104,11 @@ final class Supervisor: ObservableObject {
         runtime.onFailed = { runtime in
             Notifications.serverFailed(name: runtime.config.name, project: runtime.projectName, reason: runtime.lastError)
         }
+        runtime.reservedPorts = { [weak self, weak runtime] in
+            guard let self else { return [] }
+            let others = self.store.config.projects.flatMap(\.servers).filter { $0.id != runtime?.id }
+            return Set(others.compactMap(\.port))
+        }
     }
 
     private func bump() {
@@ -165,6 +170,7 @@ final class Supervisor: ObservableObject {
                 }
                 if includeExternalDetails {
                     self.externalProcesses = sample.externalProcesses
+                    self.refreshListeningPorts()
                 } else {
                     let previousByPID = Dictionary(uniqueKeysWithValues: self.externalProcesses.map { ($0.pid, $0) })
                     self.externalProcesses = sample.externalProcesses.map {
@@ -174,6 +180,22 @@ final class Supervisor: ObservableObject {
                 self.recordResourceHistory(samples: sample.managedByRoot, targets: targets)
                 self.evaluateMemoryLimits(samples: sample.managedByRoot, targets: targets)
                 self.bump()
+            }
+        }
+    }
+
+    /// One `lsof` for every running server, so multi-port tools show all of
+    /// their ports without each runtime probing on its own.
+    private func refreshListeningPorts() {
+        let running = runtimes.values.filter(\.isRunning)
+        guard !running.isEmpty else { return }
+        metricsQueue.async { [weak self] in
+            let byPID = PortInspector.listenerPortsByPID()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                for runtime in self.runtimes.values where runtime.isRunning {
+                    runtime.refreshListeningPorts(listenerPortsByPID: byPID)
+                }
             }
         }
     }
@@ -609,13 +631,15 @@ final class Supervisor: ObservableObject {
         healthIntervalSeconds: Int,
         maxRestartAttempts: Int,
         logBufferLines: Int,
-        logFileMaxMB: Int
+        logFileMaxMB: Int,
+        autoSelectFreePort: Bool
     ) {
         store.mutate { config in
             config.healthIntervalSeconds = healthIntervalSeconds
             config.maxRestartAttempts = maxRestartAttempts
             config.logBufferLines = logBufferLines
             config.logFileMaxMB = logFileMaxMB
+            config.autoSelectFreePort = autoSelectFreePort
         }
         refresh()
     }

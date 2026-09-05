@@ -178,8 +178,7 @@ struct AgentOnboardingCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
-                Image(systemName: setupComplete ? "checkmark.seal.fill" : "sparkles")
-                    .font(.system(size: 18, weight: .semibold))
+                NucleoIconView(setupComplete ? .badgeCheck : .sparkle, size: 19)
                     .foregroundStyle(setupComplete ? .green : Color.accentColor)
                     .frame(width: 30, height: 30)
                     .background {
@@ -238,7 +237,7 @@ struct AgentOnboardingCard: View {
             }
 
             if let error = setup.errorMessage {
-                Label(error, systemImage: "exclamationmark.triangle.fill")
+                NucleoLabel(error, icon: .warning)
                     .font(.caption)
                     .foregroundStyle(.red)
             }
@@ -265,7 +264,7 @@ struct AgentOnboardingCard: View {
     }
 }
 
-private struct SetupStep<Accessory: View>: View {
+struct SetupStep<Accessory: View>: View {
     let number: Int
     let title: String
     let detail: String
@@ -274,9 +273,7 @@ private struct SetupStep<Accessory: View>: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: isComplete ? "checkmark.circle.fill" : "\(number).circle.fill")
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(isComplete ? .green : Color.accentColor)
+            StepBadge(number: number, isComplete: isComplete)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
@@ -296,5 +293,30 @@ private struct SetupStep<Accessory: View>: View {
             RoundedRectangle(cornerRadius: 9, style: .continuous)
                 .fill(Color.primary.opacity(0.045))
         }
+    }
+}
+
+
+/// A numbered step that turns into a check once done.
+private struct StepBadge: View {
+    let number: Int
+    let isComplete: Bool
+
+    var body: some View {
+        ZStack {
+            if isComplete {
+                NucleoIconView(.checkCircle, size: 18)
+                    .foregroundStyle(.green)
+            } else {
+                Circle()
+                    .fill(Color.accentColor.opacity(0.14))
+                Text("\(number)")
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .foregroundStyle(Color.accentColor)
+                    .monospacedDigit()
+            }
+        }
+        .frame(width: 20, height: 20)
+        .accessibilityLabel(isComplete ? "Step \(number) complete" : "Step \(number)")
     }
 }

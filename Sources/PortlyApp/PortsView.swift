@@ -22,7 +22,7 @@ struct PortsView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let error = model.error, model.groups.isEmpty {
                 ContentUnavailableView {
-                    Label("Unable to scan ports", systemImage: "exclamationmark.triangle")
+                    NucleoLabel("Unable to scan ports", icon: .warning)
                 } description: {
                     Text(error)
                 } actions: {
@@ -30,7 +30,7 @@ struct PortsView: View {
                 }
             } else if model.groups.isEmpty {
                 ContentUnavailableView {
-                    Label("No active ports", systemImage: "network.slash")
+                    NucleoLabel("No active ports", icon: .networkOff)
                 } description: {
                     Text("No TCP processes are listening on this Mac.")
                 }
@@ -102,8 +102,7 @@ struct PortsView: View {
             ZStack {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(Color.accentColor.opacity(0.14))
-                Image(systemName: "network")
-                    .font(.system(size: 19, weight: .medium))
+                NucleoIconView(.network, size: 20)
                     .foregroundStyle(Color.accentColor)
             }
             .frame(width: 40, height: 40)
@@ -124,7 +123,7 @@ struct PortsView: View {
                 .frame(width: 190)
 
             Button(action: refresh) {
-                Image(systemName: "arrow.clockwise")
+                NucleoIconView(.restart, size: 14)
             }
             .buttonStyle(.bordered)
             .disabled(model.isLoading)
@@ -182,8 +181,7 @@ private struct SystemPortsCard: View {
                     ZStack {
                         RoundedRectangle(cornerRadius: 7, style: .continuous)
                             .fill(Color.secondary.opacity(0.12))
-                        Image(systemName: "gearshape.2")
-                            .font(.system(size: 13, weight: .medium))
+                        NucleoIconView(.settingsAlt, size: 14)
                             .foregroundStyle(.secondary)
                     }
                     .frame(width: 28, height: 28)
@@ -203,8 +201,7 @@ private struct SystemPortsCard: View {
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
 
-                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 9, weight: .semibold))
+                    NucleoIconView(isExpanded ? .chevronDown : .chevronRight, size: 10)
                         .foregroundStyle(.secondary)
                         .frame(width: 12)
                 }
@@ -249,8 +246,7 @@ private struct SystemPortsCard: View {
         let ports = ports(for: application)
         return VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Image(systemName: "app.dashed")
-                    .font(.system(size: 11, weight: .medium))
+                NucleoIconView(.appStack, size: 12)
                     .foregroundStyle(.secondary)
                     .frame(width: 18)
                 Text(application)
@@ -305,8 +301,7 @@ private struct SystemPortRow: View {
 
             Spacer()
 
-            Image(systemName: "lock.fill")
-                .font(.system(size: 10, weight: .medium))
+            NucleoIconView(.lock, size: 11)
                 .foregroundStyle(.tertiary)
                 .accessibilityLabel("Protected system listener")
         }
@@ -332,8 +327,7 @@ private struct PortGroupCard: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 9) {
-                Image(systemName: group.icon)
-                    .font(.system(size: 13, weight: .medium))
+                NucleoIconView(group.icon, size: 14)
                     .foregroundStyle(group.color)
                     .frame(width: 20)
                 VStack(alignment: .leading, spacing: 1) {
@@ -374,8 +368,7 @@ private struct PortGroupCard: View {
                     showsOtherPorts.toggle()
                 } label: {
                     HStack(spacing: 8) {
-                        Image(systemName: showsOtherPorts ? "chevron.down" : "chevron.right")
-                            .font(.system(size: 9, weight: .semibold))
+                        NucleoIconView(showsOtherPorts ? .chevronDown : .chevronRight, size: 10)
                             .foregroundStyle(.secondary)
                             .frame(width: 12)
                         Text(otherPortsDisclosureLabel)
@@ -452,7 +445,7 @@ private struct PortRow: View {
 
             if port.canOpen {
                 Button { onOpen(port) } label: {
-                    Image(systemName: "safari")
+                    NucleoIconView(.browser, size: 14)
                 }
                 .buttonStyle(.borderless)
                 .accessibilityLabel("Open localhost port \(String(port.port))")
@@ -461,7 +454,7 @@ private struct PortRow: View {
 
             if port.canStop {
                 Button { onStop(port) } label: {
-                    Image(systemName: port.kind == .managed ? "stop.fill" : "xmark")
+                    NucleoIconView(port.kind == .managed ? .stop : .xmark, size: 14)
                         .foregroundStyle(port.kind == .external ? Color.red : Color.primary)
                 }
                 .buttonStyle(.borderless)
@@ -742,7 +735,7 @@ final class ActivePortsModel: ObservableObject {
                     id: "system",
                     name: "System",
                     detail: "Protected background services",
-                    icon: "gearshape.2",
+                    icon: AppIcon.settingsAlt.rawValue,
                     color: .secondary,
                     rank: 10_000,
                     ports: []
@@ -757,7 +750,7 @@ final class ActivePortsModel: ObservableObject {
                     id: "system",
                     name: "System",
                     detail: "Protected background services",
-                    icon: "gearshape.2",
+                    icon: AppIcon.settingsAlt.rawValue,
                     color: .secondary,
                     rank: 10_000,
                     ports: []
@@ -804,7 +797,7 @@ final class ActivePortsModel: ObservableObject {
             id: "project:\(project.id)",
             name: project.name,
             detail: NSString(string: project.root).abbreviatingWithTildeInPath,
-            icon: project.icon,
+            icon: LegacyProjectIcons.resolve(project.icon),
             color: Color(hex: project.color),
             rank: rank,
             ports: []

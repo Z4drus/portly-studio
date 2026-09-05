@@ -58,7 +58,7 @@ struct ProjectForm: View {
             }
             .padding(14)
         }
-        .frame(width: 480)
+        .frame(width: 520)
         .onAppear {
             guard let project else {
                 color = Supervisor.nextColor(excluding: takenColors)
@@ -66,7 +66,7 @@ struct ProjectForm: View {
             }
             name = project.name
             root = project.root
-            icon = project.icon
+            icon = LegacyProjectIcons.resolve(project.icon)
             color = project.color
         }
     }
@@ -83,37 +83,32 @@ struct ProjectForm: View {
     }
 }
 
-/// A grid of colors and a grid of symbols, drawn as they will actually look in
-/// the sidebar. A hex string in a popup told you nothing.
+/// The project's colour swatches and a searchable icon browser, drawn the way
+/// they will actually look in the sidebar.
 private struct IconColorPicker: View {
     @Binding var icon: String
     @Binding var color: String
     var takenColors: [String] = []
-
-    @State private var hoveredSymbol: String?
-
-    private let columns = Array(repeating: GridItem(.fixed(30), spacing: 5), count: 9)
 
     private var taken: Set<String> {
         Set(takenColors.map { $0.uppercased() }).subtracting([color.uppercased()])
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 16) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color(hex: color).opacity(0.16))
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .strokeBorder(Color(hex: color).opacity(0.28))
-                Image(systemName: icon)
-                    .font(.system(size: 24, weight: .medium))
-                    .foregroundStyle(Color(hex: color))
-            }
-            .frame(width: 54, height: 54)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Project icon preview")
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .center, spacing: 14) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(Color(hex: color).opacity(0.16))
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(Color(hex: color).opacity(0.28))
+                    NucleoIconView(icon, size: 26)
+                        .foregroundStyle(Color(hex: color))
+                }
+                .frame(width: 54, height: 54)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Project icon preview")
 
-            VStack(alignment: .leading, spacing: 13) {
                 VStack(alignment: .leading, spacing: 7) {
                     Text("Color")
                         .font(.caption)
@@ -153,51 +148,16 @@ private struct IconColorPicker: View {
                         }
                     }
                 }
+            }
 
-                VStack(alignment: .leading, spacing: 7) {
-                    Text("Symbol")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    LazyVGrid(columns: columns, spacing: 5) {
-                        ForEach(Project.icons, id: \.self) { symbol in
-                            Button {
-                                icon = symbol
-                            } label: {
-                                Image(systemName: symbol)
-                                    .font(.system(size: 14, weight: icon == symbol ? .medium : .regular))
-                                    .foregroundStyle(icon == symbol ? Color(hex: color) : Color.secondary)
-                                    .frame(width: 30, height: 28)
-                                    .background {
-                                        RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                            .fill(symbolBackground(symbol))
-                                    }
-                                    .overlay {
-                                        RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                            .strokeBorder(
-                                                icon == symbol ? Color(hex: color).opacity(0.32) : Color.clear
-                                            )
-                                    }
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel(symbol.replacingOccurrences(of: ".", with: " "))
-                            .accessibilityValue(icon == symbol ? "Selected" : "")
-                            .help(symbol)
-                            .onHover { hovering in
-                                hoveredSymbol = hovering ? symbol : nil
-                            }
-                        }
-                    }
-                }
+            VStack(alignment: .leading, spacing: 7) {
+                Text("Icon")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                IconPicker(selection: $icon, tint: Color(hex: color))
             }
         }
         .padding(.vertical, 6)
-    }
-
-    private func symbolBackground(_ symbol: String) -> Color {
-        if icon == symbol { return Color(hex: color).opacity(0.14) }
-        if hoveredSymbol == symbol { return Color.primary.opacity(0.07) }
-        return .clear
     }
 }
 
@@ -290,7 +250,7 @@ struct ServerForm: View {
                             .foregroundStyle(.secondary)
                     }
                 } icon: {
-                    Image(systemName: "terminal")
+                    NucleoIconView(.terminal, size: 14)
                         .foregroundStyle(.secondary)
                 }
                 .padding(.vertical, 8)
@@ -523,8 +483,7 @@ private struct SuggestionRow: View {
     var body: some View {
         Button(action: onPick) {
             HStack(spacing: 10) {
-                Image(systemName: "terminal")
-                    .font(.system(size: 12, weight: .medium))
+                NucleoIconView(.terminal, size: 13)
                     .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
                     .frame(width: 20)
                 VStack(alignment: .leading, spacing: 2) {
@@ -540,9 +499,17 @@ private struct SuggestionRow: View {
                     .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 15))
-                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary.opacity(0.6))
+                ZStack {
+                    if isSelected {
+                        NucleoIconView(.checkCircle, size: 16)
+                            .foregroundStyle(Color.accentColor)
+                    } else {
+                        Circle()
+                            .strokeBorder(Color.secondary.opacity(0.6), lineWidth: 1.5)
+                            .frame(width: 14, height: 14)
+                    }
+                }
+                .frame(width: 16, height: 16)
             }
             .contentShape(Rectangle())
             .padding(.vertical, 3)
@@ -573,7 +540,7 @@ struct TemporaryProcessForm: View {
                     Label {
                         Text("Temporary jobs run in the background, stop their full process group at the timeout, and keep their result for one hour.")
                     } icon: {
-                        Image(systemName: "clock.badge")
+                        NucleoIconView(.timer, size: 14)
                             .foregroundStyle(Color.accentColor)
                     }
                     .font(PortlyTypography.body)

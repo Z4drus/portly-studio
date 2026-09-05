@@ -21,6 +21,15 @@ final class ServerRuntime: NSObject, ObservableObject, LocalProcessDelegate, Ter
     @Published private(set) var temporaryDeadline: Date?
     @Published private(set) var temporaryFinishedAt: Date?
     @Published private(set) var temporaryTimedOut = false
+    /// Node projects only: whether `node_modules` is there. Nil means no
+    /// `package.json`, so nothing to gate.
+    @Published private(set) var dependencies: DependencyStatus?
+    @Published private(set) var dependencyInstall: DependencyInstallState = .idle
+    /// Set when the configured port was busy and the server started elsewhere.
+    @Published private(set) var portFallback: PortFallback?
+    /// Every TCP port the process tree listens on (Turbopack, Bun and friends
+    /// often open a second one for the backend or HMR).
+    @Published private(set) var listeningPorts: [Int] = []
 
     let id: String
     private(set) var config: ServerConfig
@@ -35,6 +44,19 @@ final class ServerRuntime: NSObject, ObservableObject, LocalProcessDelegate, Ter
     private let logs: LogStore
     private var process: LocalProcess?
     private var terminal: TerminalView?
+    private var installer: DependencyInstallProcess?
+    private var dependencyCheckInFlight = false
+    private var listeningPortsInFlight = false
+    /// Ports other configured servers own, so a fallback never collides with a
+    /// sibling that is merely stopped. Wired by the supervisor.
+    var reservedPorts: () -> Set<Int> = { [] }
+
+    struct PortFallback: Equatable {
+        let requestedPort: Int
+        let usedPort: Int
+        let occupantPID: Int32
+        let occupantCommand: String
+    }
 
     /// Set while a stop was requested by the user or an agent, so the exit is not
     /// treated as a crash.
@@ -85,9 +107,27 @@ final class ServerRuntime: NSObject, ObservableObject, LocalProcessDelegate, Ter
         return URL(fileURLWithPath: expand(projectRoot)).appendingPathComponent(dir).path
     }
 
+    /// The port the server is really on: the fallback while it applies,
+    /// otherwise the configured one.
+    var effectivePort: Int? {
+        portFallback?.usedPort ?? config.port
+    }
+
     var url: String? {
-        guard let port = config.port else { return nil }
+        guard let port = effectivePort else { return nil }
         return "http://localhost:\(port)"
+    }
+
+    /// Listening ports beyond the primary one, for the sidebar and the API.
+    var extraPorts: [Int] {
+        listeningPorts.filter { $0 != effectivePort }
+    }
+
+    /// The configuration with the port the server is really using.
+    private var effectiveConfig: ServerConfig {
+        var effective = config
+        effective.port = effectivePort
+        return effective
     }
 
     var status: ServerStatus {
@@ -97,7 +137,7 @@ final class ServerRuntime: NSObject, ObservableObject, LocalProcessDelegate, Ter
             projectID: projectID,
             projectName: projectName,
             command: config.command,
-            port: config.port,
+            port: effectivePort,
             directory: workingDirectory,
             state: state,
             pid: pid,
@@ -115,11 +155,76 @@ final class ServerRuntime: NSObject, ObservableObject, LocalProcessDelegate, Ter
             timeoutSeconds: temporaryTimeoutSeconds,
             deadline: temporaryDeadline,
             finishedAt: temporaryFinishedAt,
-            timedOut: isTemporaryJob ? temporaryTimedOut : nil
+            timedOut: isTemporaryJob ? temporaryTimedOut : nil,
+            configuredPort: portFallback == nil ? nil : config.port,
+            extraPorts: extraPorts.isEmpty ? nil : extraPorts
         )
     }
 
     var isTemporaryJob: Bool { temporaryTimeoutSeconds != nil }
+
+    /// False while packages are missing or being installed; the start buttons
+    /// grey out rather than letting the command fail on a missing binary.
+    var canStart: Bool {
+        guard !dependencyInstall.isInstalling else { return false }
+        return dependencies?.installed ?? true
+    }
+
+    var isInstallingDependencies: Bool { dependencyInstall.isInstalling }
+
+    // MARK: - Dependencies
+
+    /// Cheap filesystem check, off the main thread; safe to call often.
+    func refreshDependencies() {
+        guard !isTemporaryJob, !dependencyCheckInFlight else { return }
+        dependencyCheckInFlight = true
+        let directory = workingDirectory
+        let root = expand(projectRoot)
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let status = DependencyInspector.inspect(workingDirectory: directory, projectRoot: root)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.dependencyCheckInFlight = false
+                if self.dependencies != status {
+                    self.dependencies = status
+                    self.onStateChange?()
+                }
+            }
+        }
+    }
+
+    func installDependencies() {
+        guard let dependencies, !isRunning, installer == nil else { return }
+        let command = dependencies.manager.installCommand
+        dependencyInstall = .installing
+        logs.note("installing dependencies: \(command) (cwd: \(dependencies.packageDirectory))")
+        let view = terminalView()
+        view.feed(text: "\u{1B}[2m[portly] \(command)\u{1B}[0m\r\n")
+        let install = DependencyInstallProcess(
+            windowSize: { [weak self] in self?.getWindowSize() ?? winsize(ws_row: 30, ws_col: 100, ws_xpixel: 0, ws_ypixel: 0) },
+            onOutput: { [weak self] slice in
+                self?.logs.append(bytes: slice)
+                DispatchQueue.main.async { self?.terminal?.feed(byteArray: slice) }
+            },
+            onExit: { [weak self] code in
+                guard let self else { return }
+                self.installer = nil
+                let label = code.map(String.init) ?? "signal"
+                self.terminal?.feed(text: "\r\n\u{1B}[2m[portly] install exited (\(label))\u{1B}[0m\r\n")
+                self.logs.note("install exited (\(label))")
+                self.dependencyInstall = code == 0 ? .idle : .failed(exitCode: code)
+                self.refreshDependencies()
+                self.onStateChange?()
+            }
+        )
+        installer = install
+        install.start(command: command, directory: dependencies.packageDirectory, environment: environmentArray())
+        onStateChange?()
+    }
+
+    func cancelDependencyInstall() {
+        installer?.terminate()
+    }
 
     var temporaryJobStatus: TemporaryJobStatus? {
         guard let timeoutSeconds = temporaryTimeoutSeconds else { return nil }
@@ -173,53 +278,9 @@ final class ServerRuntime: NSObject, ObservableObject, LocalProcessDelegate, Ter
         if let terminal { return terminal }
         let view = TerminalView(frame: CGRect(x: 0, y: 0, width: 800, height: 480))
         view.terminalDelegate = self
-        view.font = Self.terminalFont
-        view.nativeForegroundColor = TerminalTheme.foreground
-        view.nativeBackgroundColor = TerminalTheme.background
-        view.installColors(Self.terminalPalette)
-        view.useBrightColors = true
-        view.caretColor = NSColor(srgbRed: 0.49, green: 0.78, blue: 1, alpha: 1)
-        view.caretTextColor = TerminalTheme.background
-        view.selectedTextBackgroundColor = NSColor(srgbRed: 0.16, green: 0.22, blue: 0.32, alpha: 1)
-        view.selectedTextForegroundColor = NSColor(srgbRed: 0.96, green: 0.97, blue: 0.99, alpha: 1)
+        TerminalStyling.apply(to: view, fontSize: 13)
         terminal = view
         return view
-    }
-
-    /// Geist Mono gives output a modern editor feel instead of looking like a
-    /// generic system console. The fallbacks keep Portly usable on another Mac.
-    private static var terminalFont: NSFont {
-        NSFont(name: "GeistMono-Regular", size: 13)
-            ?? NSFont(name: "CommitMono-Regular", size: 13)
-            ?? NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
-    }
-
-    /// A calm, editor-inspired ANSI palette. Bright variants remain distinct
-    /// without the saturated red/green/blue of the default terminal palette.
-    private static let terminalPalette: [SwiftTerm.Color] = [
-        terminalColor(0x1B1D23), // black
-        terminalColor(0xFF6B81), // red
-        terminalColor(0xA7D46F), // green
-        terminalColor(0xF5C76D), // yellow
-        terminalColor(0x82AAFF), // blue
-        terminalColor(0xC792EA), // magenta
-        terminalColor(0x63D4D5), // cyan
-        terminalColor(0xD8DEE9), // white
-        terminalColor(0x5C6370), // bright black
-        terminalColor(0xFF879A), // bright red
-        terminalColor(0xC3E88D), // bright green
-        terminalColor(0xFFD580), // bright yellow
-        terminalColor(0x9CC4FF), // bright blue
-        terminalColor(0xDDB6F2), // bright magenta
-        terminalColor(0x89DDFF), // bright cyan
-        terminalColor(0xFFFFFF), // bright white
-    ]
-
-    private static func terminalColor(_ hex: UInt32) -> SwiftTerm.Color {
-        let red = UInt16((hex >> 16) & 0xFF) * 257
-        let green = UInt16((hex >> 8) & 0xFF) * 257
-        let blue = UInt16(hex & 0xFF) * 257
-        return SwiftTerm.Color(red: red, green: green, blue: blue)
     }
 
     // MARK: - Lifecycle
@@ -322,13 +383,25 @@ final class ServerRuntime: NSObject, ObservableObject, LocalProcessDelegate, Ter
         lastError = nil
         healthy = false
         consecutiveHealthFailures = 0
+        LoginEnvironment.ensureResolved()
 
+        portFallback = nil
         if let port = config.port, let occupant = PortInspector.occupant(of: port) {
-            lastError = "Port \(port) is already used by \(occupant.command) (pid \(occupant.pid))"
-            logs.note("cannot start, \(lastError!)")
-            setState(.failed)
-            onFailed?(self)
-            return
+            if settings.autoSelectFreePort, let free = Self.nextFreePort(after: port, reserved: reservedPorts()) {
+                portFallback = PortFallback(
+                    requestedPort: port,
+                    usedPort: free,
+                    occupantPID: occupant.pid,
+                    occupantCommand: occupant.command
+                )
+                logs.note("port \(port) is used by \(occupant.command) (pid \(occupant.pid)), starting on \(free)")
+            } else {
+                lastError = "Port \(port) is already used by \(occupant.command) (pid \(occupant.pid))"
+                logs.note("cannot start, \(lastError!)")
+                setState(.failed)
+                onFailed?(self)
+                return
+            }
         }
 
         let dir = workingDirectory
@@ -344,14 +417,20 @@ final class ServerRuntime: NSObject, ObservableObject, LocalProcessDelegate, Ter
         let proc = LocalProcess(delegate: self)
         process = proc
 
-        logs.note("starting: \(config.command)  (cwd: \(dir))")
+        let command = portFallback.map {
+            Self.rewritingPort(in: config.command, from: $0.requestedPort, to: $0.usedPort)
+        } ?? config.command
+        logs.note("starting: \(command)  (cwd: \(dir))")
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             let view = self.terminalView()
-            view.feed(text: "\u{1B}[2m[portly] \(self.config.command)\u{1B}[0m\r\n")
+            if let fallback = self.portFallback {
+                view.feed(text: "\u{1B}[33m[portly] port \(fallback.requestedPort) is used by \(fallback.occupantCommand) (pid \(fallback.occupantPID)), using \(fallback.usedPort) instead\u{1B}[0m\r\n")
+            }
+            view.feed(text: "\u{1B}[2m[portly] \(command)\u{1B}[0m\r\n")
             proc.startProcess(
                 executable: "/bin/zsh",
-                args: ["-l", "-c", self.config.command],
+                args: ["-l", "-c", command],
                 environment: self.environmentArray(),
                 execName: nil,
                 currentDirectory: dir
@@ -371,7 +450,9 @@ final class ServerRuntime: NSObject, ObservableObject, LocalProcessDelegate, Ter
     /// A login shell gives us the user's real PATH (nvm, mise, homebrew), which a
     /// bare exec would not have.
     private func environmentArray() -> [String] {
-        var env = ProcessInfo.processInfo.environment
+        var env = TerminalStyling.sanitized(ProcessInfo.processInfo.environment)
+        // Dock launches come with a bare PATH; use the one the user's shell has.
+        LoginEnvironment.apply(to: &env)
         // Portly owns a real PTY. Do not inherit NO_COLOR from the app launcher
         // or an agent shell: it would flatten Vite, pnpm and other rich output.
         env.removeValue(forKey: "NO_COLOR")
@@ -383,11 +464,87 @@ final class ServerRuntime: NSObject, ObservableObject, LocalProcessDelegate, Ter
         env["TERM_PROGRAM"] = "Portly"
         env["PORTLY"] = "1"
         env["PORTLY_SERVER"] = config.name
-        if let port = config.port {
+        if let port = effectivePort {
             env["PORT"] = String(port)
         }
         for (k, v) in config.env { env[k] = v }
         return env.map { "\($0.key)=\($0.value)" }
+    }
+
+    /// First free port after `port`, skipping listeners and the ports other
+    /// configured servers own.
+    static func nextFreePort(after port: Int, reserved: Set<Int>, isListening: (Int) -> Bool = PortInspector.isListening) -> Int? {
+        guard port < 65_535 else { return nil }
+        for candidate in (port + 1)...min(port + 100, 65_535) where !reserved.contains(candidate) && !isListening(candidate) {
+            return candidate
+        }
+        return nil
+    }
+
+    /// Rewrites an explicit port (`-p 3000`, `--port=3000`, `PORT=3000 …`,
+    /// `localhost:3000`) so tools that ignore `$PORT` still follow the fallback.
+    static func rewritingPort(in command: String, from requested: Int, to used: Int) -> String {
+        let patterns = [
+            "((?:^|\\s)(?:-p|--port|-P|--listen|--host-port)(?:\\s+|=))\(requested)(?=\\s|$)",
+            "((?:^|\\s)PORT=)\(requested)(?=\\s|$)",
+            "(localhost:)\(requested)(?=\\s|/|$)",
+        ]
+        var result = command
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            let range = NSRange(result.startIndex..., in: result)
+            result = regex.stringByReplacingMatches(in: result, range: range, withTemplate: "$1\(used)")
+        }
+        return result
+    }
+
+    // MARK: - Listening ports
+
+    /// Ports owned by this server's whole process tree, via one `lsof`.
+    func refreshListeningPorts(listenerPortsByPID: [Int32: Set<Int>]? = nil) {
+        guard isRunning, let root = pid else {
+            if !listeningPorts.isEmpty { listeningPorts = [] }
+            return
+        }
+        var tree: Set<Int32> = [root]
+        for snapshot in processMetrics?.processes ?? [] { tree.insert(snapshot.pid) }
+        if let listenerPortsByPID {
+            apply(listenerPortsByPID: listenerPortsByPID, tree: tree)
+            return
+        }
+        guard !listeningPortsInFlight else { return }
+        listeningPortsInFlight = true
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let byPID = PortInspector.listenerPortsByPID()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.listeningPortsInFlight = false
+                self.apply(listenerPortsByPID: byPID, tree: tree)
+            }
+        }
+    }
+
+    private func apply(listenerPortsByPID: [Int32: Set<Int>], tree: Set<Int32>) {
+        var ports = Set<Int>()
+        for pid in tree { ports.formUnion(listenerPortsByPID[pid] ?? []) }
+        let sorted = ports.sorted()
+        if sorted != listeningPorts {
+            listeningPorts = sorted
+            onStateChange?()
+        }
+    }
+
+    /// Running on a fallback port: free the configured one and come back to it.
+    func reclaimConfiguredPort() {
+        guard portFallback != nil else { return }
+        if isRunning {
+            stop(then: { [weak self] in
+                guard let self else { return }
+                if !self.takeOverPort() { self.start() }
+            })
+        } else if !takeOverPort() {
+            start()
+        }
     }
 
     private func scheduleTemporaryTimeout() {
@@ -502,7 +659,7 @@ final class ServerRuntime: NSObject, ObservableObject, LocalProcessDelegate, Ter
 
     private func runHealthCheck() {
         guard isRunning, let proc = process, proc.running else { return }
-        HealthChecker.check(server: config) { [weak self] ok in
+        HealthChecker.check(server: effectiveConfig) { [weak self] ok in
             DispatchQueue.main.async { self?.handleHealthResult(ok) }
         }
     }
@@ -514,7 +671,10 @@ final class ServerRuntime: NSObject, ObservableObject, LocalProcessDelegate, Ter
         if ok {
             consecutiveHealthFailures = 0
             lastHealthyAt = Date()
-            if state != .running { setState(.running) }
+            if state != .running {
+                setState(.running)
+                refreshListeningPorts()
+            }
             onStateChange?()
             return
         }
@@ -573,6 +733,9 @@ final class ServerRuntime: NSObject, ObservableObject, LocalProcessDelegate, Ter
         guard state != new else { return }
         state = new
         if new == .stopped || new == .failed {
+            refreshDependencies()
+            portFallback = nil
+            listeningPorts = []
             healthy = false
             pid = nil
             processMetrics = nil
@@ -658,10 +821,15 @@ final class ServerRuntime: NSObject, ObservableObject, LocalProcessDelegate, Ter
     // MARK: - TerminalViewDelegate (keyboard goes back to the process)
 
     func send(source: TerminalView, data: ArraySlice<UInt8>) {
+        if let installer, installer.isRunning {
+            installer.send(data: data)
+            return
+        }
         process?.send(data: data)
     }
 
     func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
+        installer?.resize(cols: newCols, rows: newRows)
         guard let process, process.running, process.childfd >= 0 else { return }
         var size = winsize(
             ws_row: UInt16(newRows), ws_col: UInt16(newCols),

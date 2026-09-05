@@ -8,10 +8,9 @@ struct PortlyApp: App {
     @StateObject private var supervisor = Supervisor.shared
     @AppStorage(PortlyPreferences.showMenuBarItemKey) private var showMenuBarItem = true
     @AppStorage(PortlyPreferences.showInDockKey) private var showInDock = true
-    private let updater = PortlyUpdater.shared
 
     var body: some Scene {
-        Window("Portly", id: WindowOpener.mainWindowID) {
+        Window("Portly Custom", id: WindowOpener.mainWindowID) {
             MainView()
                 .environmentObject(supervisor)
                 .frame(minWidth: 900, minHeight: 560)
@@ -19,12 +18,13 @@ struct PortlyApp: App {
         }
         .defaultSize(width: 1080, height: 660)
         .commands {
-            CommandGroup(replacing: .newItem) {}
-            CommandGroup(after: .appInfo) {
-                Button("Check for Updates…") {
-                    updater.checkForUpdates()
-                }
+            CommandGroup(replacing: .newItem) {
+                Button("New Coding Session") { StudioWorkspace.shared.perform(.newSession) }
+                    .keyboardShortcut("n", modifiers: .command)
+                Button("New Shell Terminal") { StudioWorkspace.shared.perform(.newPane(.shell)) }
+                    .keyboardShortcut("t", modifiers: .command)
             }
+            StudioCommands()
         }
 
         MenuBarExtra(isInserted: $showMenuBarItem) {
@@ -56,6 +56,7 @@ struct PortlyApp: App {
 /// running, badged when something needs attention.
 private struct MenuBarLabel: View {
     @ObservedObject var supervisor: Supervisor
+    @ObservedObject private var keepAwake = KeepAwake.shared
     @AppStorage(PortlyPreferences.showMenuBarNameKey) private var showName = false
 
     var body: some View {
@@ -63,13 +64,19 @@ private struct MenuBarLabel: View {
             Image(nsImage: PortlyGlyph.menuBarImage(active: supervisor.runningCount > 0))
                 .renderingMode(.template)
 
+            if keepAwake.isActive {
+                Image.nucleo(.coffee)
+                    .resizable()
+                    .frame(width: 12, height: 12)
+                    .accessibilityLabel("Keeping the Mac awake")
+            }
+
             if showName {
                 Text("Portly")
             }
 
             if supervisor.hasProblem {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 9))
+                NucleoIconView(.warning, size: 10)
             }
         }
         .accessibilityLabel("Portly")
@@ -80,6 +87,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var control: ControlServer?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
+        LoginEnvironment.resolveIfNeeded()
         let presentation = AppPresentation.applyFromUserDefaults()
         WindowOpener.suppressMainWindowAtLaunch = presentation.usesAccessoryPolicy
     }
@@ -92,11 +100,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         server.start()
         control = server
         Supervisor.shared.resumeAfterUpdaterRelaunchIfNeeded()
-        Task { await PortlyAnalytics.shared.trackLaunch() }
+        // Private fork: no launch telemetry is sent anywhere.
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         // The app is the supervisor: quitting takes every server down with it.
+        KeepAwake.shared.shutdown()
+        StudioWorkspace.shared.terminateEverything()
         Supervisor.shared.terminateEverythingSynchronously()
         control?.stop()
         return .terminateNow

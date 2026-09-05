@@ -13,13 +13,15 @@ struct SettingsView: View {
     var body: some View {
         TabView {
             GeneralSettingsView()
-                .tabItem { Label("General", systemImage: "gearshape") }
+                .tabItem { NucleoLabel("General", icon: .settings) }
             RuntimeSettingsView()
-                .tabItem { Label("Servers", systemImage: "server.rack") }
+                .tabItem { NucleoLabel("Servers", icon: .server) }
             MemoryGuardSettingsView()
-                .tabItem { Label("Memory", systemImage: "memorychip") }
+                .tabItem { NucleoLabel("Memory", icon: .memory) }
+            StudioSettingsView()
+                .tabItem { NucleoLabel("Code", icon: .terminal) }
         }
-        .frame(width: 680, height: 560)
+        .frame(width: 680, height: 620)
     }
 }
 
@@ -30,6 +32,7 @@ private struct GeneralSettingsView: View {
     @AppStorage("agentOnboardingDismissed") private var agentOnboardingDismissed = false
     @State private var launchAtLogin = false
     @State private var loginItemError: String?
+    @StateObject private var systemAccess = SystemAccessStatus()
 
     var body: some View {
         Form {
@@ -54,6 +57,10 @@ private struct GeneralSettingsView: View {
                 Text("When hidden, Portly stays in the menu bar and keeps supervising servers.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            Section("System access") {
+                SystemAccessSettingsRows(status: systemAccess)
             }
 
             Section("Startup") {
@@ -81,9 +88,6 @@ private struct GeneralSettingsView: View {
 
             Section("Portly") {
                 LabeledContent("Version", value: appVersion)
-                Button("Check for Updates…") {
-                    PortlyUpdater.shared.checkForUpdates()
-                }
                 Button("Show Agent Setup") {
                     agentOnboardingDismissed = false
                     WindowOpener.openMainWindow()
@@ -98,6 +102,8 @@ private struct GeneralSettingsView: View {
             }
         }
         .task { launchAtLogin = SMAppService.mainApp.status == .enabled }
+        .onAppear { systemAccess.startPolling() }
+        .onDisappear { systemAccess.stopPolling() }
         .alert("Unable to update login setting", isPresented: Binding(
             get: { loginItemError != nil },
             set: { if !$0 { loginItemError = nil } }
@@ -170,6 +176,7 @@ private struct RuntimeSettingsView: View {
     @State private var maxRestartAttempts = 5
     @State private var logBufferLines = 5_000
     @State private var logFileMaxMB = 10
+    @State private var autoSelectFreePort = true
     @State private var saved = false
 
     var body: some View {
@@ -186,6 +193,13 @@ private struct RuntimeSettingsView: View {
                     in: 1...20
                 )
                 Text("Portly restarts unhealthy servers only when automatic restart is enabled for that server.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Ports") {
+                Toggle("Start on the next free port when the configured one is busy", isOn: $autoSelectFreePort)
+                Text("The server keeps its configured port in the sidebar; Portly shows the port it really got and offers to take the configured one back.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -207,7 +221,7 @@ private struct RuntimeSettingsView: View {
             Section {
                 HStack {
                     if saved {
-                        Label("Saved", systemImage: "checkmark.circle.fill")
+                        NucleoLabel("Saved", icon: .checkCircle)
                             .font(.caption)
                             .foregroundStyle(.green)
                     }
@@ -225,6 +239,7 @@ private struct RuntimeSettingsView: View {
         .onChange(of: maxRestartAttempts) { saved = false }
         .onChange(of: logBufferLines) { saved = false }
         .onChange(of: logFileMaxMB) { saved = false }
+        .onChange(of: autoSelectFreePort) { saved = false }
     }
 
     private var hasChanges: Bool {
@@ -233,6 +248,7 @@ private struct RuntimeSettingsView: View {
             || maxRestartAttempts != settings.maxRestartAttempts
             || logBufferLines != settings.logBufferLines
             || logFileMaxMB != settings.logFileMaxMB
+            || autoSelectFreePort != settings.autoSelectFreePort
     }
 
     private func load() {
@@ -241,6 +257,7 @@ private struct RuntimeSettingsView: View {
         maxRestartAttempts = settings.maxRestartAttempts
         logBufferLines = settings.logBufferLines
         logFileMaxMB = settings.logFileMaxMB
+        autoSelectFreePort = settings.autoSelectFreePort
     }
 
     private func save() {
@@ -248,7 +265,8 @@ private struct RuntimeSettingsView: View {
             healthIntervalSeconds: healthIntervalSeconds,
             maxRestartAttempts: maxRestartAttempts,
             logBufferLines: logBufferLines,
-            logFileMaxMB: logFileMaxMB
+            logFileMaxMB: logFileMaxMB,
+            autoSelectFreePort: autoSelectFreePort
         )
         saved = true
     }
@@ -262,7 +280,7 @@ private struct MemoryGuardSettingsView: View {
         Form {
             Section {
                 VStack(alignment: .leading, spacing: 6) {
-                    Label("Automatic memory guard", systemImage: "shield.lefthalf.filled")
+                    NucleoLabel("Automatic memory guard", icon: .shield)
                         .font(PortlyTypography.bodyMedium)
                     Text("Portly measures each project's total footprint every two seconds. Three consecutive samples above its limit restart every running server in that project, then sampling starts fresh on the new processes.")
                         .font(.caption)
@@ -274,8 +292,7 @@ private struct MemoryGuardSettingsView: View {
 
             Section("Global default") {
                 HStack(spacing: 12) {
-                    Image(systemName: "globe")
-                        .font(.system(size: 15, weight: .semibold))
+                    NucleoIconView(.network, size: 16)
                         .foregroundStyle(.blue)
                         .frame(width: 32, height: 32)
                         .background(.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
@@ -364,9 +381,9 @@ private struct MemoryGuardSettingsView: View {
                 }
 
                 if let event = supervisor.memoryLimitRestarts[project.id] {
-                    Label(
+                    NucleoLabel(
                         "Last automatic restart: \(event.timestamp.formatted(date: .abbreviated, time: .shortened))",
-                        systemImage: "arrow.clockwise"
+                        icon: .restart
                     )
                     .font(PortlyTypography.metadata)
                     .foregroundStyle(.orange)
@@ -488,9 +505,9 @@ private struct MemoryLimitEditor: View {
                     Text(explanation)
                         .font(PortlyTypography.body)
                         .foregroundStyle(.secondary)
-                    Label("Three consecutive samples above the limit", systemImage: "clock.arrow.2.circlepath")
-                    Label("Sampling resets after each restart", systemImage: "arrow.counterclockwise")
-                    Label("All running servers in an affected project restart together", systemImage: "arrow.triangle.2.circlepath")
+                    NucleoLabel("Three consecutive samples above the limit", icon: .history)
+                    NucleoLabel("Sampling resets after each restart", icon: .history)
+                    NucleoLabel("All running servers in an affected project restart together", icon: .restart)
                 }
                 .font(PortlyTypography.metadata)
             }

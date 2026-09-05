@@ -9,7 +9,7 @@ public enum PortlyClientError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .appNotRunning:
-            return "Portly is not running and could not be launched. Open Portly.app, then retry."
+            return "Portly is not running and could not be launched. Open Portly Custom.app, then retry."
         case .transport(let m): return "Cannot reach Portly: \(m)"
         case .api(let m): return m
         case .badResponse: return "Portly returned a response that could not be parsed."
@@ -56,6 +56,8 @@ public final class PortlyClient {
     public func launchAppIfNeeded(timeout: TimeInterval = 20) -> Bool {
         if isReachable() { return true }
         let candidates = [
+            "/Applications/Portly Custom.app",
+            NSString(string: "~/Applications/Portly Custom.app").expandingTildeInPath,
             "/Applications/Portly.app",
             NSString(string: "~/Applications/Portly.app").expandingTildeInPath,
         ]

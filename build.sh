@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds Portly.app and the portly CLI, then installs both.
+# Builds Portly Custom.app and the portly CLI, then installs both.
 #
 #   ./build.sh            build + install to /Applications and /usr/local/bin
 #   ./build.sh --no-install   build only, leaves the bundle in ./dist
@@ -11,7 +11,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DIST="$ROOT/dist"
-APP="$DIST/Portly.app"
+APP="$DIST/Portly Custom.app"
 INSTALL=1
 RUN=0
 FOREVER=0
@@ -45,11 +45,8 @@ else
 fi
 
 VERSION="$(grep -o '"[0-9][^"]*"' "$ROOT/Sources/PortlyCore/Version.swift" | tr -d '"')"
-SPARKLE_ACCOUNT="${PORTLY_SPARKLE_ACCOUNT:-dev.portly.app}"
-SPARKLE_PUBLIC_KEY="$(tr -d '\n' < "$ROOT/Config/sparkle-public-key")"
-SPARKLE_FEED_URL="https://github.com/Melvynx/portly/releases/latest/download/appcast.xml"
 
-echo "==> Assembling Portly.app"
+echo "==> Assembling Portly Custom.app"
 if [ -e "$APP" ]; then
   trash "$APP"
 fi
@@ -70,8 +67,6 @@ if [ "$RELEASE" -eq 1 ]; then
 else
   cp "$BIN_DIR/PortlyApp" "$APP/Contents/MacOS/Portly"
 fi
-cp -R "$BIN_DIR/Sparkle.framework" "$APP/Contents/Frameworks/"
-install_name_tool -add_rpath '@executable_path/../Frameworks' "$APP/Contents/MacOS/Portly"
 
 # SwiftTerm ships a resource bundle; carry it along if this build produced one.
 for bundle in "$BIN_DIR"/*.bundle; do
@@ -95,9 +90,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
 	<key>CFBundleName</key>
-	<string>Portly</string>
+	<string>Portly Custom</string>
 	<key>CFBundleDisplayName</key>
-	<string>Portly</string>
+	<string>Portly Custom</string>
 	<key>CFBundleIdentifier</key>
 	<string>dev.portly.app</string>
 	<key>CFBundleExecutable</key>
@@ -124,12 +119,6 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 	<false/>
 	<key>NSSupportsSuddenTermination</key>
 	<false/>
-	<key>SUFeedURL</key>
-	<string>${SPARKLE_FEED_URL}</string>
-	<key>SUPublicEDKey</key>
-	<string>${SPARKLE_PUBLIC_KEY}</string>
-	<key>SUScheduledCheckInterval</key>
-	<integer>86400</integer>
 </dict>
 </plist>
 PLIST
@@ -199,8 +188,15 @@ if [ "$RELEASE" -eq 1 ]; then
   echo "    $ARCHIVE"
   echo "    $DIST/appcast.xml"
 else
-  echo "==> Signing (ad-hoc)"
-  codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || echo "    ad-hoc signing failed, continuing"
+  # A fixed identity keeps the TCC grants (Full Disk Access, Accessibility)
+  # across rebuilds; ad-hoc signatures change every build and lose them.
+  DEV_IDENTITY="${PORTLY_DEV_SIGN_IDENTITY:-$(security find-identity -v -p codesigning | sed -n 's/.*"\(Apple Development:[^"]*\)".*/\1/p' | head -1)}"
+  if [ -n "$DEV_IDENTITY" ] && codesign --force --deep --sign "$DEV_IDENTITY" "$APP" >/dev/null 2>&1; then
+    echo "==> Signed with $DEV_IDENTITY"
+  else
+    echo "==> Signing (ad-hoc)"
+    codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || echo "    ad-hoc signing failed, continuing"
+  fi
 fi
 
 if [ "$INSTALL" -eq 1 ]; then
@@ -215,6 +211,7 @@ if [ "$INSTALL" -eq 1 ]; then
     if command -v portly >/dev/null 2>&1; then
       portly quit >/dev/null 2>&1 || true
     fi
+    osascript -e 'quit app "Portly Custom"' >/dev/null 2>&1 || true
     osascript -e 'quit app "Portly"' >/dev/null 2>&1 || true
     for _ in {1..20}; do
       pgrep -x Portly >/dev/null 2>&1 || break
@@ -228,22 +225,26 @@ if [ "$INSTALL" -eq 1 ]; then
   if [ -e /Applications/Portly.app ]; then
     trash /Applications/Portly.app
   fi
-  cp -R "$APP" /Applications/Portly.app
-  echo "    /Applications/Portly.app"
+  if [ -e "/Applications/Portly Custom.app" ]; then
+    trash "/Applications/Portly Custom.app"
+  fi
+  cp -R "$APP" "/Applications/Portly Custom.app"
+  echo "    /Applications/Portly Custom.app"
 
-  # First writable directory that is already on PATH wins.
+  # Every writable bin directory on PATH gets the CLI, so a stale copy of the
+  # stock Portly CLI can never shadow the custom one.
   CLI_TARGET=""
   for candidate in /opt/homebrew/bin /usr/local/bin "$HOME/.local/bin"; do
-    if [ -d "$candidate" ] && [ -w "$candidate" ]; then
-      CLI_TARGET="$candidate/portly"
-      break
+    if [ -d "$candidate" ] && [ -w "$candidate" ] && { [ -z "$CLI_TARGET" ] || [ -e "$candidate/portly" ]; }; then
+      cp "$APP/Contents/Resources/portly-cli" "$candidate/portly"
+      chmod +x "$candidate/portly"
+      echo "    $candidate/portly"
+      [ -z "$CLI_TARGET" ] && CLI_TARGET="$candidate/portly"
     fi
   done
 
   if [ -n "$CLI_TARGET" ]; then
-    cp "$APP/Contents/Resources/portly-cli" "$CLI_TARGET"
-    chmod +x "$CLI_TARGET"
-    echo "    $CLI_TARGET"
+    :
   else
     echo "    no writable bin directory found, run:"
     echo "      sudo cp '$BIN_DIR/portly' /usr/local/bin/portly"
@@ -303,11 +304,16 @@ if [ "$FOREVER" -eq 1 ]; then
   portly forever enable
 elif [ "$RUN" -eq 1 ]; then
   echo "==> Launching"
-  open /Applications/Portly.app
+  open "/Applications/Portly Custom.app"
 fi
 
 if { [ "$FOREVER" -eq 1 ] || [ "$RUN" -eq 1 ]; } && [ "${#RUNNING_SERVERS[@]}" -gt 0 ]; then
   echo "==> Restoring active servers"
+  # The app needs a moment to bring its control API up after `open`.
+  for _ in {1..60}; do
+    curl -s -o /dev/null "http://127.0.0.1:7737/status" && break
+    sleep 0.25
+  done
   for server_id in "${RUNNING_SERVERS[@]}"; do
     portly start "$server_id" --json >/dev/null
     echo "    $server_id"

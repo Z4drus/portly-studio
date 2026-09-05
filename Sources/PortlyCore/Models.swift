@@ -122,8 +122,8 @@ public enum MemorySize {
 public struct Project: Codable, Identifiable, Hashable {
     public var id: String
     public var name: String
-    /// SF Symbol name drawn in the project's color. Not an emoji: a tinted
-    /// symbol matches the rest of the system UI at every size.
+    /// Nucleo glyph id (`category/name`) drawn in the project's color. Old
+    /// configs may still hold an SF Symbol name; the app maps those on read.
     public var icon: String
     /// Hex color used for the icon and the accent dot.
     public var color: String
@@ -156,15 +156,16 @@ public struct Project: Codable, Identifiable, Hashable {
 
     public static func newID() -> String { "prj_" + String(UUID().uuidString.prefix(8)).lowercased() }
 
-    public static let defaultIcon = "shippingbox.fill"
+    public static let defaultIcon = "shopping/box-2"
 
-    /// The icons offered in the UI and accepted by the CLI. Short on purpose:
-    /// enough to tell projects apart at a glance, not a symbol browser.
+    /// A handful of sensible defaults. The app offers the full Nucleo set
+    /// through its searchable picker; the CLI accepts any `category/name` id.
     public static let icons = [
-        "shippingbox.fill", "cube.fill", "globe", "server.rack", "bolt.fill",
-        "cloud.fill", "hammer.fill", "flask.fill", "cart.fill", "envelope.fill",
-        "chart.bar.fill", "star.fill", "heart.fill", "gamecontroller.fill",
-        "camera.fill", "music.note", "book.fill", "terminal.fill",
+        "shopping/box-2", "ar-vr/cube", "business-finance/globe", "technology-devices/server",
+        "weather/bolt", "weather/cloud", "ui-layout/hammer", "school-education/flask",
+        "shopping/cart-shopping", "communication/envelope", "charts/chart-bar", "bookmarks-favorites/star",
+        "bookmarks-favorites/heart", "gaming/gamepad", "photography-video/camera",
+        "sound-music/music-note", "school-education/book", "design-development/terminal",
     ]
 
     public init(from decoder: Decoder) throws {
@@ -202,6 +203,9 @@ public struct PortlyConfig: Codable {
     public var logFileMaxMB: Int
     /// Default project footprint limit. Nil keeps automatic memory restarts off.
     public var globalMemoryLimitBytes: UInt64?
+    /// When the configured port is busy, start on the next free one instead
+    /// of failing. The runtime reports the port it actually used.
+    public var autoSelectFreePort: Bool
     public var projects: [Project]
 
     public static let defaultAPIPort = 7737
@@ -214,6 +218,7 @@ public struct PortlyConfig: Codable {
         logBufferLines: Int = 5000,
         logFileMaxMB: Int = 10,
         globalMemoryLimitBytes: UInt64? = nil,
+        autoSelectFreePort: Bool = true,
         projects: [Project] = []
     ) {
         self.version = version
@@ -223,6 +228,7 @@ public struct PortlyConfig: Codable {
         self.logBufferLines = logBufferLines
         self.logFileMaxMB = logFileMaxMB
         self.globalMemoryLimitBytes = globalMemoryLimitBytes
+        self.autoSelectFreePort = autoSelectFreePort
         self.projects = projects
     }
 
@@ -235,6 +241,7 @@ public struct PortlyConfig: Codable {
         logBufferLines = try c.decodeIfPresent(Int.self, forKey: .logBufferLines) ?? 5000
         logFileMaxMB = try c.decodeIfPresent(Int.self, forKey: .logFileMaxMB) ?? 10
         globalMemoryLimitBytes = try c.decodeIfPresent(UInt64.self, forKey: .globalMemoryLimitBytes)
+        autoSelectFreePort = try c.decodeIfPresent(Bool.self, forKey: .autoSelectFreePort) ?? true
         projects = try c.decodeIfPresent([Project].self, forKey: .projects) ?? []
     }
 
@@ -408,6 +415,10 @@ public struct ServerStatus: Codable, Identifiable, Hashable {
     public var deadline: Date?
     public var finishedAt: Date?
     public var timedOut: Bool?
+    /// The port from the configuration when the server had to start elsewhere.
+    public var configuredPort: Int?
+    /// Every TCP port the process tree listens on, beyond the primary one.
+    public var extraPorts: [Int]?
 
     public init(
         id: String, name: String, projectID: String, projectName: String,
@@ -417,7 +428,8 @@ public struct ServerStatus: Codable, Identifiable, Hashable {
         cpuPercent: Double? = nil, memoryBytes: UInt64? = nil,
         residentMemoryBytes: UInt64? = nil, processCount: Int? = nil,
         temporary: Bool? = nil, timeoutSeconds: Int? = nil,
-        deadline: Date? = nil, finishedAt: Date? = nil, timedOut: Bool? = nil
+        deadline: Date? = nil, finishedAt: Date? = nil, timedOut: Bool? = nil,
+        configuredPort: Int? = nil, extraPorts: [Int]? = nil
     ) {
         self.id = id
         self.name = name
@@ -443,6 +455,8 @@ public struct ServerStatus: Codable, Identifiable, Hashable {
         self.deadline = deadline
         self.finishedAt = finishedAt
         self.timedOut = timedOut
+        self.configuredPort = configuredPort
+        self.extraPorts = extraPorts
     }
 }
 

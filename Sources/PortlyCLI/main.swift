@@ -483,7 +483,7 @@ struct AddProject: ParsableCommand {
     @Option(name: .long, help: "Absolute path to the project folder.")
     var path: String
 
-    @Option(name: .long, help: "SF Symbol name shown in the sidebar, for example globe.")
+    @Option(name: .long, help: "Nucleo icon id shown in the sidebar, for example business-finance/globe.")
     var icon: String?
 
     @Option(name: .long, help: "Hex color for the project icon.")
@@ -873,7 +873,10 @@ private enum ForeverManager {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/LaunchAgents/\(label).plist")
     }
-    static let appExecutable = "/Applications/Portly.app/Contents/MacOS/Portly"
+    static var appExecutable: String {
+        let custom = "/Applications/Portly Custom.app/Contents/MacOS/Portly"
+        return FileManager.default.fileExists(atPath: custom) ? custom : "/Applications/Portly.app/Contents/MacOS/Portly"
+    }
 
     static func state() -> ForeverState {
         ForeverState(
@@ -887,7 +890,7 @@ private enum ForeverManager {
 
     static func enable(options: GlobalOptions) throws -> ForeverState {
         guard FileManager.default.isExecutableFile(atPath: appExecutable) else {
-            throw ValidationError("Install /Applications/Portly.app first with ./build.sh --run.")
+            throw ValidationError("Install /Applications/Portly Custom.app first with ./build.sh --run.")
         }
 
         let activeServers = try stopCurrentApp(options: options)

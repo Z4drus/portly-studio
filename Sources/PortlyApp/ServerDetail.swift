@@ -11,6 +11,7 @@ struct ServerDetail: View {
     @State private var conflict: PortOccupant?
     @State private var showsResources = false
     @State private var conflictActionError: String?
+    @State private var acknowledgedFallbackPort: Int?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -26,7 +27,27 @@ struct ServerDetail: View {
                 }
                 .transition(.move(edge: .top).combined(with: .opacity))
             }
-            if runtime.state == .stopped {
+            if let fallback = runtime.portFallback, acknowledgedFallbackPort != fallback.usedPort {
+                VStack(spacing: 0) {
+                    fallbackBanner(fallback)
+                    Divider()
+                }
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
+            if runtime.dependencyInstall.isInstalling {
+                VStack(spacing: 0) {
+                    installBanner
+                    Divider()
+                }
+                .transition(.move(edge: .top).combined(with: .opacity))
+            } else if case .failed(let code) = runtime.dependencyInstall {
+                VStack(spacing: 0) {
+                    installFailedBanner(code)
+                    Divider()
+                }
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
+            if runtime.state == .stopped, !runtime.isInstallingDependencies {
                 stoppedState
                     .transition(.opacity)
             } else {
@@ -37,7 +58,11 @@ struct ServerDetail: View {
         }
         .clipped()
         .animation(Motion.banner, value: conflict?.pid)
+        .animation(Motion.banner, value: runtime.dependencyInstall)
+        .animation(Motion.banner, value: runtime.portFallback)
+        .animation(Motion.banner, value: acknowledgedFallbackPort)
         .animation(Motion.paneSwap, value: runtime.state == .stopped)
+        .animation(Motion.paneSwap, value: runtime.isInstallingDependencies)
         .toolbar {
             ToolbarItemGroup {
                 Button {
@@ -47,23 +72,23 @@ struct ServerDetail: View {
                         runtime.start()
                     }
                 } label: {
-                    Label(
-                        runtime.isRunning ? "Stop" : runtime.state == .failed ? "Retry" : "Start",
-                        systemImage: runtime.isRunning ? "stop.fill" : runtime.state == .failed ? "arrow.clockwise" : "play.fill"
-                    )
-                    .contentTransition(.symbolEffect(.replace))
+                    NucleoLabel(runtime.isRunning ? "Stop" : runtime.state == .failed ? "Retry" : "Start", icon: runtime.isRunning ? .stop : runtime.state == .failed ? .restart : .play)
+                    .contentTransition(.opacity)
                 }
                 .animation(Motion.state, value: runtime.isRunning)
+                .disabled(!runtime.isRunning && !runtime.canStart)
                 .help(
                     runtime.isRunning
                         ? "Stop the server"
-                        : runtime.state == .failed
-                            ? "Reset retries and start the server"
-                            : "Start the server"
+                        : !runtime.canStart
+                            ? "Install the dependencies first"
+                            : runtime.state == .failed
+                                ? "Reset retries and start the server"
+                                : "Start the server"
                 )
 
                 if runtime.isRunning {
-                    Button { runtime.restart() } label: { Label("Restart", systemImage: "arrow.clockwise") }
+                    Button { runtime.restart() } label: { NucleoLabel("Restart", icon: .restart) }
                         .help("Restart the server")
                 }
 
@@ -75,35 +100,58 @@ struct ServerDetail: View {
                             }
                         }
                     } label: {
-                        Label("Actions", systemImage: "bolt.fill")
+                        NucleoLabel("Actions", icon: .bolt)
                     }
                     .help("Run a maintenance action without restarting the server")
                 }
 
                 if let url = runtime.url {
-                    Button {
-                        if let link = URL(string: url) { NSWorkspace.shared.open(link) }
-                    } label: {
-                        Label("Open", systemImage: "safari")
+                    if runtime.extraPorts.isEmpty {
+                        Button {
+                            if let link = URL(string: url) { NSWorkspace.shared.open(link) }
+                        } label: {
+                            NucleoLabel("Open", icon: .browser)
+                        }
+                        .help("Open \(url)")
+                    } else {
+                        Menu {
+                            ForEach([runtime.effectivePort].compactMap { $0 } + runtime.extraPorts, id: \.self) { port in
+                                Button("http://localhost:\(String(port))") {
+                                    if let link = URL(string: "http://localhost:\(port)") { NSWorkspace.shared.open(link) }
+                                }
+                            }
+                        } label: {
+                            NucleoLabel("Open", icon: .browser)
+                        }
+                        .help("This server listens on several ports")
                     }
-                    .help("Open \(url)")
                 }
 
                 if runtime.state != .stopped {
-                    Button { runtime.clearTerminal() } label: { Label("Clear", systemImage: "eraser") }
+                    Button { runtime.clearTerminal() } label: { NucleoLabel("Clear", icon: .eraser) }
                         .help("Clear the terminal")
                 }
 
                 if let onEdit {
-                    Button(action: onEdit) { Label("Edit", systemImage: "slider.horizontal.3") }
+                    Button(action: onEdit) { NucleoLabel("Edit", icon: .sliders) }
                         .help("Edit this server")
                 }
             }
         }
         .navigationTitle(runtime.config.name)
         .navigationSubtitle(runtime.projectName)
-        .onAppear(perform: refreshConflict)
+        .onAppear {
+            refreshConflict()
+            runtime.refreshDependencies()
+        }
         .onChange(of: runtime.state) { refreshConflict() }
+        // A `pnpm install` run from any terminal should flip the button off by
+        // itself, so poll the folder while packages are missing.
+        .onReceive(Self.dependencyPoll) { _ in
+            if runtime.dependencies?.installed == false || runtime.isInstallingDependencies {
+                runtime.refreshDependencies()
+            }
+        }
         .alert("Unable to stop port owner", isPresented: Binding(
             get: { conflictActionError != nil },
             set: { if !$0 { conflictActionError = nil } }
@@ -114,10 +162,88 @@ struct ServerDetail: View {
         }
     }
 
+    private static let dependencyPoll = Timer.publish(every: 4, on: .main, in: .common).autoconnect()
+
+    private func fallbackBanner(_ fallback: ServerRuntime.PortFallback) -> some View {
+        HStack(spacing: 10) {
+            NucleoIconView(.info, size: 14)
+                .foregroundStyle(Color.accentColor)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Running on port \(fallback.usedPort)")
+                    .font(.system(size: 12, weight: .medium))
+                Text("Port \(fallback.requestedPort) is used by \(fallback.occupantCommand) (pid \(fallback.occupantPID)). Portly picked the next free one.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+            Spacer()
+            Button("Keep \(fallback.usedPort)") {
+                acknowledgedFallbackPort = fallback.usedPort
+            }
+            .controlSize(.small)
+            Button("Take port \(fallback.requestedPort)") {
+                runtime.reclaimConfiguredPort()
+            }
+            .controlSize(.small)
+            .buttonStyle(.borderedProminent)
+            .help("Stops \(fallback.occupantCommand), waits for the port, then restarts this server on \(fallback.requestedPort)")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
+        .background(Color.accentColor.opacity(0.1))
+    }
+
+    private var installBanner: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                ProgressView()
+                    .controlSize(.small)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Installing dependencies")
+                        .font(.system(size: 12, weight: .medium))
+                    if let dependencies = runtime.dependencies {
+                        Text("\(dependencies.manager.installCommand) · \(NSString(string: dependencies.packageDirectory).abbreviatingWithTildeInPath)")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+                Spacer()
+                Button("Cancel") { runtime.cancelDependencyInstall() }
+                    .controlSize(.small)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            IndeterminateBar()
+                .padding(.horizontal, 14)
+                .padding(.bottom, 8)
+        }
+        .background(Color.accentColor.opacity(0.08))
+    }
+
+    private func installFailedBanner(_ code: Int32?) -> some View {
+        HStack(spacing: 10) {
+            NucleoIconView(.warning, size: 14)
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(code.map { "Install failed with exit code \($0)" } ?? "Install was interrupted")
+                    .font(.system(size: 12, weight: .medium))
+                Text("The output stays in the terminal below. Fix the cause, then try again.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            InstallDependenciesButton(runtime: runtime, prominent: false)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
+        .background(Color.orange.opacity(0.12))
+    }
+
     private var stoppedState: some View {
         VStack(spacing: 12) {
-            Image(systemName: stoppedIcon)
-                .font(.system(size: 32, weight: .light))
+            NucleoIconView(stoppedIcon, size: 32)
                 .foregroundStyle(runtime.temporaryJobStatus?.state == .succeeded ? Color.green : Color.secondary)
 
             VStack(spacing: 4) {
@@ -128,20 +254,34 @@ struct ServerDetail: View {
                     .foregroundStyle(.secondary)
             }
 
-            Button(runtime.isTemporaryJob ? "Run Again" : "Start", systemImage: "play.fill") {
-                runtime.start()
+            HStack(spacing: 10) {
+                InstallDependenciesButton(runtime: runtime)
+                Button {
+                    runtime.start()
+                } label: {
+                    NucleoLabel(runtime.isTemporaryJob ? "Run Again" : "Start", icon: .play)
+                }
+                .buttonStyle(runtime.canStart ? AnyPrimitiveButtonStyle(.borderedProminent) : AnyPrimitiveButtonStyle(.bordered))
+                .controlSize(.large)
+                .disabled(!runtime.canStart)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
+            .animation(Motion.state, value: runtime.canStart)
+
+            if let dependencies = runtime.dependencies, !dependencies.installed, !runtime.isInstallingDependencies {
+                Text("No node_modules in \(NSString(string: dependencies.packageDirectory).lastPathComponent) yet. Portly detected \(dependencies.manager.displayName).")
+                    .font(PortlyTypography.metadata)
+                    .foregroundStyle(.secondary)
+                    .transition(.opacity)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private var stoppedIcon: String {
+    private var stoppedIcon: AppIcon {
         switch runtime.temporaryJobStatus?.state {
-        case .succeeded: return "checkmark.circle"
-        case .failed, .timedOut: return "xmark.circle"
-        default: return "terminal"
+        case .succeeded: return .checkCircle
+        case .failed, .timedOut: return .xmarkCircle
+        default: return .terminal
         }
     }
 
@@ -173,22 +313,31 @@ struct ServerDetail: View {
                 StatusBadge(state: runtime.state)
 
                 if let pid = runtime.pid {
-                    fact("PID \(pid)", systemImage: "number")
+                    fact("PID \(pid)", icon: .hashtag)
                 }
-                if let port = runtime.config.port {
-                    fact("Port \(port)", systemImage: "network")
+                if let port = runtime.effectivePort {
+                    fact(runtime.portFallback == nil ? "Port \(port)" : "Port \(port) (wanted \(runtime.config.port ?? port))", icon: .network)
+                }
+                ForEach(runtime.extraPorts, id: \.self) { port in
+                    fact("+ :\(port)", icon: .network)
                 }
                 if let startedAt = runtime.startedAt, runtime.isRunning {
-                    fact("Up \(startedAt.compactUptime)", systemImage: "clock")
+                    fact("Up \(startedAt.compactUptime)", icon: .clock)
                 }
                 if let job = runtime.temporaryJobStatus {
-                    fact(jobFact(job), systemImage: job.state == .running ? "timer" : "checkmark.circle")
+                    fact(jobFact(job), icon: job.state == .running ? .timer : .checkCircle)
                 }
                 if runtime.restartCount > 0 {
                     fact(
                         "\(runtime.restartCount)/\(supervisor.settings.maxRestartAttempts) restarts",
-                        systemImage: "arrow.clockwise"
+                        icon: .restart
                     )
+                }
+                if let dependencies = runtime.dependencies, !dependencies.installed, !runtime.isRunning {
+                    NucleoLabel("Dependencies missing", icon: .warning, size: 11)
+                        .font(PortlyTypography.metadata)
+                        .foregroundStyle(.orange)
+                        .transition(.opacity)
                 }
 
                 Spacer()
@@ -205,7 +354,7 @@ struct ServerDetail: View {
                     Button {
                         showsResources.toggle()
                     } label: {
-                        Image(systemName: "chart.bar.xaxis")
+                        NucleoIconView(.chartBar, size: 14)
                             .foregroundStyle(showsResources ? Color.accentColor : Color.secondary)
                             .frame(width: 24, height: 24)
                             .background {
@@ -223,7 +372,7 @@ struct ServerDetail: View {
                 HStack(spacing: 18) {
                     compactResource(
                         value: metrics.cpuPercent.formatted(.number.precision(.fractionLength(1))) + "%",
-                        systemImage: "cpu",
+                        icon: .cpu,
                         color: metrics.cpuPressure.color,
                         label: "CPU",
                         help: "Total CPU used by this server and its child processes"
@@ -233,14 +382,14 @@ struct ServerDetail: View {
                             fromByteCount: Int64(metrics.memoryBytes),
                             countStyle: .memory
                         ),
-                        systemImage: "memorychip",
+                        icon: .memory,
                         color: metrics.memoryPressure.color,
                         label: "Memory",
                         help: "Total memory owned by this server and its child processes"
                     )
                     compactResource(
                         value: String(metrics.processCount),
-                        systemImage: "square.stack.3d.up",
+                        icon: .layers,
                         color: .blue,
                         label: "Processes",
                         help: "Processes Portly groups together for this server"
@@ -251,7 +400,7 @@ struct ServerDetail: View {
                     Button {
                         AppSelection.shared.pending = .resources
                     } label: {
-                        Label("Details", systemImage: "arrow.up.right")
+                        NucleoLabel("Details", icon: .arrowUpRight)
                     }
                     .buttonStyle(.borderless)
                     .help("Open the resource dashboard")
@@ -263,8 +412,8 @@ struct ServerDetail: View {
         .background(.regularMaterial)
     }
 
-    private func fact(_ text: String, systemImage: String) -> some View {
-        Label(text, systemImage: systemImage)
+    private func fact(_ text: String, icon: AppIcon) -> some View {
+        NucleoLabel(text, icon: icon, size: 11)
             .font(PortlyTypography.metadata)
             .foregroundStyle(.secondary)
             .monospacedDigit()
@@ -282,14 +431,13 @@ struct ServerDetail: View {
 
     private func compactResource(
         value: String,
-        systemImage: String,
+        icon: AppIcon,
         color: Color,
         label: String,
         help: String
     ) -> some View {
         HStack(spacing: 6) {
-            Image(systemName: systemImage)
-                .font(.system(size: 11, weight: .medium))
+            NucleoIconView(icon, size: 12)
                 .foregroundStyle(color)
             Text(value)
                 .font(PortlyTypography.metric)
@@ -305,7 +453,7 @@ struct ServerDetail: View {
 
     private func conflictBanner(_ occupant: PortOccupant) -> some View {
         HStack(spacing: 10) {
-            Image(systemName: "exclamationmark.triangle.fill")
+            NucleoIconView(.warning, size: 14)
                 .foregroundStyle(.orange)
             VStack(alignment: .leading, spacing: 1) {
                 Text(occupant.dockerContainerID == nil ? "Running outside Portly" : "Docker container outside Portly")
@@ -316,6 +464,11 @@ struct ServerDetail: View {
                     .textSelection(.enabled)
             }
             Spacer()
+            if supervisor.settings.autoSelectFreePort {
+                Text("Start uses the next free port")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
             Button(occupant.dockerContainerID == nil ? "Stop process" : "Stop container") {
                 stopConflictOwner(occupant)
             }
