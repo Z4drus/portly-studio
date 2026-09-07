@@ -5,7 +5,11 @@
 #   ./build.sh --no-install   build only, leaves the bundle in ./dist
 #   ./build.sh --run          build, install, and relaunch the app
 #   ./build.sh --forever      build, install, and enable launch at login
-#   ./build.sh --release      signed + notarized ZIP and Sparkle appcast
+#   ./build.sh --release      universal, ad-hoc signed ZIP for a GitHub release
+#
+# --release carries nothing personal: it never touches the local configuration in
+# ~/.config/portly, and it signs ad-hoc instead of with a developer certificate,
+# so no Apple ID, team identifier or machine name ends up in the archive.
 
 set -euo pipefail
 
@@ -17,6 +21,17 @@ RUN=0
 FOREVER=0
 RELEASE=0
 RUNNING_SERVERS=()
+
+# `trash` is a personal convenience, not a dependency: anyone who clones the
+# repository should be able to build without installing it.
+discard() {
+  [ -e "$1" ] || return 0
+  if command -v trash >/dev/null 2>&1; then
+    trash "$1"
+  else
+    rm -rf "$1"
+  fi
+}
 
 for arg in "$@"; do
   case "$arg" in
@@ -47,9 +62,7 @@ fi
 VERSION="$(grep -o '"[0-9][^"]*"' "$ROOT/Sources/PortlyCore/Version.swift" | tr -d '"')"
 
 echo "==> Assembling Portly Custom.app"
-if [ -e "$APP" ]; then
-  trash "$APP"
-fi
+discard "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 
 if [ "$RELEASE" -eq 1 ]; then
@@ -131,62 +144,20 @@ else
 fi
 
 if [ "$RELEASE" -eq 1 ]; then
-  SIGN_IDENTITY="${PORTLY_SIGN_IDENTITY:-$(security find-identity -v -p codesigning | sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p' | head -1)}"
-  if [ -z "$SIGN_IDENTITY" ]; then
-    echo "No Developer ID Application identity is available in the keychain." >&2
-    exit 1
-  fi
-  echo "==> Signing for Developer ID distribution"
-  codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" \
-    "$APP/Contents/Resources/portly-cli"
-  codesign --force --deep --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP"
-  codesign --verify --strict --verbose=2 "$APP/Contents/Resources/portly-cli"
+  # An ad-hoc signature is deliberate. A Developer ID certificate would stamp the
+  # maintainer's Apple ID and team identifier into every downloaded copy, and this
+  # fork is not notarized, so the download instructions clear the quarantine flag
+  # instead. Nothing about the machine that built the archive travels with it.
+  echo "==> Signing (ad-hoc)"
+  codesign --force --sign - "$APP/Contents/Resources/portly-cli"
+  codesign --force --deep --sign - "$APP"
   codesign --verify --deep --strict --verbose=2 "$APP"
 
-  ARCHIVE="$DIST/Portly-macOS.zip"
-  if [ -e "$ARCHIVE" ]; then
-    trash "$ARCHIVE"
-  fi
+  ARCHIVE="$DIST/Portly-Studio-macOS.zip"
+  discard "$ARCHIVE"
   echo "==> Archiving"
   ditto -c -k --sequesterRsrc --keepParent "$APP" "$ARCHIVE"
-
-  echo "==> Notarizing with Apple"
-  asc notarization submit --file "$ARCHIVE" --wait --timeout 1h --output table
-  xcrun stapler staple "$APP"
-  xcrun stapler validate "$APP"
-
-  # The final archive contains the stapled ticket, so it works even when the
-  # first launch cannot reach Apple's notarization service.
-  trash "$ARCHIVE"
-  ditto -c -k --sequesterRsrc --keepParent "$APP" "$ARCHIVE"
-  spctl --assess --type execute --verbose=2 "$APP"
-
-  echo "==> Generating Sparkle appcast"
-  UPDATE_DIR="$DIST/update"
-  if [ -e "$UPDATE_DIR" ]; then
-    trash "$UPDATE_DIR"
-  fi
-  mkdir -p "$UPDATE_DIR"
-  cp "$ARCHIVE" "$UPDATE_DIR/"
-  if [ -n "${PORTLY_PREVIOUS_APPCAST:-}" ] && [ -f "$PORTLY_PREVIOUS_APPCAST" ]; then
-    cp "$PORTLY_PREVIOUS_APPCAST" "$UPDATE_DIR/appcast.xml"
-  fi
-  GENERATE_APPCAST="${PORTLY_GENERATE_APPCAST:-}"
-  if [ -z "$GENERATE_APPCAST" ]; then
-    GENERATE_APPCAST="$(find "$ROOT/.build/artifacts" -type f -name generate_appcast -print -quit)"
-  fi
-  if [ -z "$GENERATE_APPCAST" ] || [ ! -x "$GENERATE_APPCAST" ]; then
-    echo "Sparkle's generate_appcast tool was not found." >&2
-    exit 1
-  fi
-  "$GENERATE_APPCAST" \
-    --account "$SPARKLE_ACCOUNT" \
-    --download-url-prefix "https://github.com/Melvynx/portly/releases/download/v${VERSION}/" \
-    --link "https://portly.melvynx.dev" \
-    "$UPDATE_DIR"
-  cp "$UPDATE_DIR/appcast.xml" "$DIST/appcast.xml"
   echo "    $ARCHIVE"
-  echo "    $DIST/appcast.xml"
 else
   # A fixed identity keeps the TCC grants (Full Disk Access, Accessibility)
   # across rebuilds; ad-hoc signatures change every build and lose them.
@@ -222,12 +193,8 @@ if [ "$INSTALL" -eq 1 ]; then
       exit 1
     fi
   fi
-  if [ -e /Applications/Portly.app ]; then
-    trash /Applications/Portly.app
-  fi
-  if [ -e "/Applications/Portly Custom.app" ]; then
-    trash "/Applications/Portly Custom.app"
-  fi
+  discard /Applications/Portly.app
+  discard "/Applications/Portly Custom.app"
   cp -R "$APP" "/Applications/Portly Custom.app"
   echo "    /Applications/Portly Custom.app"
 
@@ -252,8 +219,10 @@ if [ "$INSTALL" -eq 1 ]; then
 
   SKILL_TARGET="$HOME/.agents/skills/portly"
   mkdir -p "$HOME/.agents/skills"
-  if [ -e "$SKILL_TARGET" ] || [ -L "$SKILL_TARGET" ]; then
-    trash "$SKILL_TARGET"
+  if [ -L "$SKILL_TARGET" ]; then
+    rm -f "$SKILL_TARGET"
+  else
+    discard "$SKILL_TARGET"
   fi
   cp -R "$ROOT/skills/portly" "$SKILL_TARGET"
   echo "    $SKILL_TARGET"
@@ -268,7 +237,7 @@ if [ "$INSTALL" -eq 1 ]; then
 - Always use Portly (`portly ...`) to start, stop, restart, inspect, or keep local development servers running.
 - Start with `portly status`. Use `portly status --details` only for the full inventory and metrics, and `--json` only for machine-readable fields. Reuse a healthy managed server; if an in-scope server is running outside Portly, register it and use `portly take-over <project/server> --json`.
 - For long-lived or reusable work, create a project and server.
-- For builds, tests, code generation, previews, demos, and other bounded one-off work, run `job_id="$(portly temp '<command>' --path <folder> --timeout 30m)"`, then `portly wait "$job_id"`. `temp` returns immediately with an ID; `wait` prints captured logs and exits with the command's real code. A timeout kills the whole process group and exits with code `124`.
+- For builds, tests, code generation, and other bounded one-off work, run it directly in the foreground with a timeout; Portly only supervises servers.
 - Never launch persistent development servers directly, in the background, or through another supervisor.
 <!-- portly:managed-rule:end -->
 RULE
@@ -292,7 +261,7 @@ RULE
     cat "$RULE_SNIPPET" >> "$AGENTS_FILE"
     echo "    $AGENTS_FILE (Portly rules added)"
   fi
-  trash "$RULE_SNIPPET"
+  rm -f "$RULE_SNIPPET"
 fi
 
 if [ "$FOREVER" -eq 1 ]; then

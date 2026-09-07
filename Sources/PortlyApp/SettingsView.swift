@@ -20,6 +20,8 @@ struct SettingsView: View {
                 .tabItem { NucleoLabel("Memory", icon: .memory) }
             StudioSettingsView()
                 .tabItem { NucleoLabel("Code", icon: .terminal) }
+            UsageSettingsView()
+                .tabItem { NucleoLabel("AI Usage", icon: .sparkle) }
         }
         .frame(width: 680, height: 620)
     }

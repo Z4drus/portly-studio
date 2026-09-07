@@ -1,95 +1,168 @@
-# Portly
+# Portly Studio
 
-Portly is a native macOS supervisor for local development servers. It keeps each command in a real interactive PTY, checks its port, restarts it after crashes, and exposes the same controls through a menu bar app, a CLI, and a loopback-only HTTP API.
+**A vibecoding cockpit built on top of [Portly](https://github.com/Melvynx/portly).**
 
-Use persistent projects for long-lived, reusable services. Use top-level **Temporary** jobs for builds, tests, one-off previews, demos, generated artifacts, and short tasks; they run in the background with a deadline, expose their logs and exit code, and are never restored on the next launch.
+Portly supervises local development servers on macOS: every command runs in a real interactive PTY,
+its port is checked, and it comes back after a crash. Portly Studio keeps all of that and turns the
+app into the place you actually code from — a project sidebar where each project holds split
+terminals running Claude Code, Codex, Cursor Agent or Gemini CLI, and a live readout of how much of
+each assistant's limit you have already burned.
 
-Portly requires macOS 14 or newer and Swift 6.
+Three things, in one native app:
 
-## This fork: Portly Custom
+- **Supervised dev servers** — Portly's original job, unchanged.
+- **Coding sessions** — persistent split terminals per project, with agent presets, resumed
+  conversations, a scratch shell, an `.env` editor and a keep-awake mug.
+- **AI usage statistics** — one ring per assistant, in a screen-edge notch, in the sidebar and in
+  the menu bar, with every limit window and its reset time.
 
-Private fork of [Melvynx/portly](https://github.com/Melvynx/portly) that keeps everything Portly does (supervised dev servers, ports, resources, memory guard, CLI, agent skill) and adds a coding cockpit on top:
+macOS 14 or newer, Apple silicon or Intel. macOS only.
 
-- **Coding sessions per project** — each project in the sidebar can hold several sessions; a session is 1 to 5 terminals split right/down (⌘D / ⇧⌘D), resizable, zoomable (⇧⌘↩), with per-session text size (⌘+ / ⌘−). Layouts persist in `~/.config/portly/studio.json`; shells respawn when a session is reopened.
-- **PATH** — launched from the Dock, macOS gives an app almost no PATH; Portly asks your interactive login shell once and hands its PATH (pnpm, bun, fnm…) to every server, terminal and install it starts.
-- **Relaunch** — every session respawns at launch and the last selection comes back; Claude Code panes carry a session id (`--session-id`) and resume their conversation (`--resume`) after a quit or a reboot. A *Reset* button in the pane header starts a fresh chat.
-- **Agent presets** — new terminals start Claude Code (bypass permissions by default), Codex, Cursor Agent, Gemini CLI, a custom command, or a bare shell. Settings → Code.
-- **Terminal titles** — the pane header follows the OSC title the CLI sets (Claude Code names its tasks) and the working directory.
-- **Quick terminal** — one scratch shell per project floating top-right, toggled with ⌘J from any screen.
-- **Environment files** — every `.env*` at the project root in a floating panel (⇧⌘E) with dotenv colouring (keys, strings, comments, `${vars}`, unclosed quotes flagged), "create .env from .env.example" and the reverse.
-- **Keep awake** — the mug in the toolbar holds the Mac awake (power assertion, plus `pmset disablesleep` with an administrator so a closed lid keeps Wi-Fi and agents alive). It releases by itself once every terminal has been quiet for N minutes, after 90 s offline, or under 10% battery, and always on quit. The first activation asks for your password once to install a sudo rule limited to those two `pmset` commands.
-- **System access** — an onboarding card and Settings → General rows for Full Disk Access and Accessibility; agents started from Portly inherit them. `build.sh` signs with the Apple Development identity so the grants survive rebuilds.
-- **Ports** — a busy configured port makes the server start on the next free one (PORT and explicit `-p/--port` rewritten), with a banner to take the configured port back; every port the process tree listens on shows in the sidebar and the Open menu.
-- **Activity** — a spinner next to a session while any of its terminals produces output, a dot once it went quiet and you have not looked yet; Claude Code's animated title glyph is stripped.
-- **Dependencies** — a Node server whose `node_modules` is missing shows an *Install dependencies* button (pnpm/bun/yarn/npm detected from the lockfile) and greys out *Start* until the install finishes.
-- **Drop zone** — drop files anywhere on a project screen to copy them to its root, then "Tell the agent" types the file list into the focused terminal.
-- **Nucleo glyph-duo icons** everywhere, and a project icon picker that searches 3 400 glyphs in French or English.
-- No Sparkle auto-update and no launch telemetry: the upstream feed would replace this build.
-
-Build and install with `./build.sh --run` (installs `/Applications/Portly Custom.app`, the `portly` CLI and the agent skill).
-
-## Smart resource dashboard
-
-The native **Resources** screen samples every Portly-owned process tree every two seconds and keeps a five-minute memory history. It shows physical footprint, resident RAM, CPU, project trends, and the current user's heaviest processes running outside Portly. Configure the optional global project limit and per-project inherit/off/custom overrides in **Settings → Memory**. A project restarts after three consecutive over-limit footprint samples, then sampling starts fresh on the replacement processes.
-
-Portly turns those measurements into machine-aware recommendations instead of relying on one fixed limit. It detects unusually large servers and processes, sustained growth while ignoring isolated build spikes, and duplicate dev sessions outside Portly. Advice is tailored to common Next.js, Vite, Node, TypeScript, browser, Docker, Redis, and Postgres failure modes. Managed servers can be restarted or stopped from the recommendation card. External process cards show the validated stop target, parent, working directory, listening ports, and the difference between footprint and resident RAM; an explicit confirmation can send SIGTERM, but Portly never terminates them automatically or escalates to SIGKILL.
-
-When Docker Desktop owns a published host port, Portly resolves the actual container through the Docker CLI. **Stop** and **Move to Portly** stop only that container instead of signaling the global `com.docker.backend` process.
+---
 
 ## Install
 
+### Download
+
+Grab the latest `Portly-Studio-macOS.zip` from
+[Releases](https://github.com/Z4drus/portly-studio/releases/latest), unzip it, and move
+**Portly Custom.app** to `/Applications`.
+
+The build is signed ad-hoc rather than notarized by Apple, so macOS quarantines the download. Clear
+the flag once:
+
 ```bash
+xattr -dr com.apple.quarantine "/Applications/Portly Custom.app"
+open "/Applications/Portly Custom.app"
+```
+
+The app lives in the menu bar. Its onboarding card installs the `portly` CLI and the agent skill,
+and points at the Full Disk Access and Accessibility toggles — grant them and the agents Portly
+starts inherit them.
+
+Because the signature is ad-hoc, macOS treats each new version as a different app and asks for those
+two permissions again after an update.
+
+### Build from source
+
+```bash
+git clone https://github.com/Z4drus/portly-studio.git
+cd portly-studio
 ./build.sh --run
 ```
 
-This builds and ad-hoc signs `Portly.app`, installs it in `/Applications`, installs `portly` in the first writable bin directory on `PATH`, installs the bundled skill in `~/.agents/skills/portly`, adds idempotent Portly server-management rules to `~/.agents/AGENTS.md`, and launches the app. Reinstalling quits the running app first, which stops every server supervised by Portly. Public GitHub releases are signed with Developer ID and notarized by Apple.
+`build.sh` builds and signs the bundle, installs `/Applications/Portly Custom.app`, drops the
+`portly` CLI in the first writable bin directory on `PATH`, installs the bundled skill in
+`~/.agents/skills/portly`, adds marker-delimited Portly rules to `~/.agents/AGENTS.md`, and launches
+the app. Reinstalling quits the running app first, which stops every supervised server.
 
-People who download the signed macOS app can complete the same agent setup from the onboarding card at the top of Portly. It installs the bundled skill and CLI, then adds marker-delimited global rules to `~/.agents/AGENTS.md` and `~/.claude/CLAUDE.md` without replacing existing instructions.
+- `./build.sh --no-install` assembles `dist/Portly Custom.app` without installing it.
+- `./build.sh --release` produces the universal, ad-hoc signed `dist/Portly-Studio-macOS.zip`.
+- `./build.sh --forever` also registers the LaunchAgent, so Portly starts at every login.
 
-To launch Portly automatically at every macOS login, use:
+When a Developer certificate is present, the local build signs with it so the Full Disk Access and
+Accessibility grants survive rebuilds. The release archive never uses it: an ad-hoc signature keeps
+the maintainer's Apple ID and team identifier out of every downloaded copy.
 
-```bash
-./build.sh --forever
-portly forever status --json
-```
+---
 
-`portly forever enable` preserves and restarts the servers that were active during the handoff to `launchd`. `portly forever disable` removes the LaunchAgent recoverably and leaves active servers running under a regular Portly launch. This mode supervises the macOS app.
+## The coding cockpit
 
-Use `./build.sh --no-install` to assemble `dist/Portly.app` without installing it.
+- **Coding sessions per project** — each project holds several sessions; a session is 1 to 5
+  terminals split right or down (⌘D / ⇧⌘D), resizable, zoomable (⇧⌘↩), with per-session text size
+  (⌘+ / ⌘−). Layouts persist in `~/.config/portly/studio.json` and shells respawn when a session is
+  reopened.
+- **Agent presets** — a new terminal starts Claude Code (bypass permissions by default), Codex,
+  Cursor Agent, Gemini CLI, a custom command, or a bare shell. Settings → Code.
+- **Relaunch** — every session respawns at launch and the last selection comes back. Claude Code
+  panes carry a session id (`--session-id`) and resume their conversation (`--resume`) after a quit
+  or a reboot; a *Reset* button in the pane header starts a fresh chat.
+- **Workspace trust** — Claude Code asks "Is this a project you created or one you trust?" the first
+  time it runs in a folder, and there is no flag to skip it. Creating a project in Portly answers it
+  in advance by writing the same key its dialog writes
+  (`projects["<real path>"].hasTrustDialogAccepted` in `~/.claude.json`), preserving every other byte
+  of that file, so a new project opens straight on a prompt. Settings → Code has the toggle and an
+  *Approve every project now* button for older projects.
+- **PATH** — launched from the Dock, macOS gives an app almost no PATH. Portly asks your interactive
+  login shell once and hands its PATH (pnpm, bun, fnm…) to every server, terminal and install it
+  starts.
+- **Terminal titles** — the pane header follows the OSC title the CLI sets (Claude Code names its
+  tasks) and the working directory.
+- **Quick terminal** — one scratch shell per project, floating top-right, toggled with ⌘J from any
+  screen.
+- **Environment files** — every `.env*` at the project root in a floating panel (⇧⌘E) with dotenv
+  colouring (keys, strings, comments, `${vars}`, unclosed quotes flagged), plus "create `.env` from
+  `.env.example`" and the reverse.
+- **Keep awake** — the mug in the toolbar holds the Mac awake (power assertion, plus
+  `pmset disablesleep` with an administrator so a closed lid keeps Wi-Fi and agents alive). It
+  releases by itself once every terminal has been quiet for N minutes, after 90 s offline, under 10 %
+  battery, and always on quit. The first activation asks for your password once to install a sudo
+  rule limited to those two `pmset` commands.
+- **Activity** — a spinner next to a session while any of its terminals produces output, a dot once
+  it went quiet and you have not looked yet. Claude Code's animated title glyph is stripped.
+- **Drop zone** — drop files anywhere on a project screen to copy them to its root, then
+  *Tell the agent* types the file list into the focused terminal.
+- **Dependencies** — a Node server whose `node_modules` is missing shows an *Install dependencies*
+  button (pnpm, bun, yarn or npm, detected from the lockfile) and greys out *Start* until the install
+  finishes.
+- **Icons and colours** — Nucleo glyph-duo icons everywhere, a project icon picker that searches
+  3 400 glyphs in French or English, and a twenty-colour project palette.
 
-## Linux
+## AI usage
 
-Linux uses the headless supervisor in [`cli/`](cli). Do not install the SwiftUI/AppKit app there. The binary is the supervisor: a CLI command auto-starts a loopback daemon on `127.0.0.1` (default `7737`) if needed.
+How much of each coding assistant's limit you have burned, read from the credential the tool already
+holds on the machine — Claude Code's keychain token by default; Codex, Cursor and Grok are opt-in in
+Settings → AI Usage. Nothing is sent anywhere except to each vendor's own usage endpoint.
 
-```bash
-cd cli
-go test ./...
-go build -o portly .
-sudo install -m 755 portly /usr/local/bin/portly
-# or: GOOS=linux GOARCH=amd64 go build -o portly .
-```
+A black notch on a screen edge shows one ring per assistant and unfolds on hover, with a tooltip
+listing every limit window — Claude's current session, the all-models week, and per-model weekly
+windows such as Fable — and when each resets. Clicking a ring refreshes it. The same readings sit in
+a collapsible section just above *Resources* in the sidebar, and as rows in the menu bar popover.
 
-The command surface matches macOS (`status`, `temp`, `wait`, `add-project`, `add-server`, `start`/`stop`/`restart`, `logs`, `take-over`, `memory-limit`, `forever`, …). `open` succeeds with a no-UI message. `forever` manages a systemd user unit (`portly forever enable|status|disable`); it fails clearly when `systemctl --user` is unavailable instead of writing a LaunchAgent.
+Settings → AI Usage chooses which of the three surfaces to use, which window the ring follows
+(current session, or the one closest to its limit), whether per-model weekly windows are listed, and
+whether live sessions show. A thin arc turns inside the Claude ring while a Claude Code session is
+working anywhere on the Mac, and goes amber when one is waiting for you.
 
-Do not run the macOS app and this daemon on the same host: they both claim `127.0.0.1:7737`. Config and logs stay at `~/.config/portly/`.
+Adapted from [Codenotch](https://github.com/vinzdg/codenotch) (MIT).
 
-Docs: [portly.melvynx.dev/linux](https://portly.melvynx.dev/linux)
+## Supervised servers and resources
 
-## Updates and releases
+Everything Portly does, kept as-is.
 
-Portly checks the signed Sparkle feed once a day and also exposes **Check for Updates…** in the app menu and Settings. The installed version is visible in Settings and in the standard About window.
+Projects hold long-lived, reusable services. Builds, tests and other one-off commands are not
+Portly's job: run them directly, in the foreground, with a timeout.
 
-To publish a new version, update the single value in `Sources/PortlyCore/Version.swift`, commit and push it, then run:
+A busy configured port makes the server start on the next free one (`PORT` and an explicit
+`-p`/`--port` are rewritten), with a banner to take the configured port back; every port the process
+tree listens on shows in the sidebar and in the Open menu.
 
-```bash
-./release.sh 0.1.2
-```
+The native **Resources** screen samples every Portly-owned process tree every two seconds and keeps a
+five-minute memory history: physical footprint, resident RAM, CPU, project trends, and the current
+user's heaviest processes running outside Portly. The optional global project limit and the
+per-project inherit / off / custom overrides live in **Settings → Memory**. A project restarts after
+three consecutive over-limit footprint samples, then sampling starts fresh on the replacement
+processes.
 
-The release script builds a universal Apple silicon and Intel binary from the pushed commit. It creates a hardened-runtime Developer ID build, submits it to Apple for notarization, staples the ticket, signs the update with the Sparkle key stored in the macOS Keychain, and publishes `Portly-macOS.zip` plus `appcast.xml` to a versioned GitHub release. The landing page and the app feed both follow GitHub's latest release URLs.
+Those measurements turn into machine-aware recommendations rather than one fixed limit: unusually
+large servers and processes, sustained growth while ignoring isolated build spikes, and duplicate dev
+sessions outside Portly. Advice is tailored to common Next.js, Vite, Node, TypeScript, browser,
+Docker, Redis and Postgres failure modes. Managed servers can be restarted or stopped from the
+recommendation card. External process cards show the validated stop target, parent, working
+directory, listening ports, and the gap between footprint and resident RAM; an explicit confirmation
+can send `SIGTERM`, but Portly never terminates them automatically and never escalates to `SIGKILL`.
+
+When Docker Desktop owns a published host port, Portly resolves the actual container through the
+Docker CLI, so **Stop** and **Move to Portly** act on that container instead of signalling the global
+`com.docker.backend` process.
+
+---
 
 ## CLI
 
-Every CLI command launches Portly automatically when it is closed. `status` is compact by default: it shows only active servers and problems. Use `--details` for the full human inventory and `--json` for complete machine-readable data.
+Every CLI command launches Portly automatically when it is closed. `status` is compact by default:
+only active servers and problems. Use `--details` for the full human inventory and `--json` for
+complete machine-readable data.
 
 ```bash
 portly status
@@ -97,50 +170,49 @@ portly status --details
 portly status --json
 
 portly memory-limit 5GB
-portly memory-limit 3GB --project lumail.io
-portly memory-limit inherit --project lumail.io
+portly memory-limit 3GB --project my-app
+portly memory-limit inherit --project my-app
 portly memory-limit off
 
-job_id="$(portly temp 'npm run build' --timeout 20m)"
-portly wait "$job_id"
-
-portly temp 'npm run dev -- --host 127.0.0.1 --port 5180' \
-  --name transcript-preview \
-  --path /path/to/generated/transcript \
-  --port 5180 \
-  --timeout 1h
-
 portly add-project \
-  --name codelynx \
-  --path ~/Developer/projects/codelynx.dev-v2 \
+  --name my-app \
+  --path ~/Developer/my-app \
   --icon globe \
   --color '#0A84FF' \
   --json
 
 portly add-server \
-  --project codelynx \
+  --project my-app \
   --name web \
   --command 'pnpm dev' \
   --port 5173 \
   --start \
   --json
 
-portly logs codelynx/web --tail 100
-portly restart codelynx/web --json
-portly update-server codelynx/web --action 'clear-cache=trash .next/cache'
-job_id="$(portly action codelynx/web clear-cache)"
-portly wait "$job_id"
-portly take-over codelynx/web --json
-portly stop --project codelynx --json
+portly logs my-app/web --tail 100
+portly restart my-app/web --json
+portly update-server my-app/web --action 'clear-cache=trash .next/cache'
+portly action my-app/web clear-cache
+portly take-over my-app/web --json
+portly stop --project my-app --json
 ```
 
-Other commands are `temp` (`temporary`, `run-temp`), `wait`, `action`, `memory-limit` (`ram-limit`), `start`, `stop`, `restart`, `take-over` (`adopt`), `update-server`, `remove`, `port`, `kill-port`, `open`, `quit`, `forever`, and `config`. `temp` returns a job ID immediately; `wait` blocks for that ID and exits with the job's real exit code (`124` for timeout). `action` runs a configured maintenance command beside a server without restarting it. `memory-limit` shows or changes the global default and project overrides; it is off by default. `take-over` stops an external listener on the configured port and relaunches the server under Portly. `forever` manages the per-user macOS LaunchAgent. Run `portly <command> --help` for exact flags. `quit` stops every managed server because the app is the supervisor.
+The other commands are `action`, `memory-limit` (`ram-limit`), `start`, `stop`, `restart`,
+`take-over` (`adopt`), `update-server`, `remove`, `port`, `kill-port`, `open`, `quit`, `forever` and
+`config`. `action` runs a configured maintenance command beside a server without restarting it; its
+output lands in that server's terminal and logs. `memory-limit` shows or changes the global default
+and the project overrides, and is off by default. `take-over` stops an external listener on the
+configured port and relaunches the server under Portly. `forever` manages the per-user macOS
+LaunchAgent — `forever enable` preserves and restarts the servers active during the handoff to
+`launchd`, `forever disable` removes the LaunchAgent recoverably and leaves them running under a
+regular launch. `quit` stops every managed server, because the app is the supervisor.
+
+Run `portly <command> --help` for the exact flags.
 
 ## Configuration
 
-Portly stores its source of truth in `~/.config/portly/config.json` and watches the file for external changes. Server logs live in `~/.config/portly/logs/`.
-
-Temporary jobs are intentionally absent from `config.json`. They exist only in the current Portly app session, appear separately as `temporaryServers` in `portly status --json`, and retain their terminal result for one hour so an agent can wait or inspect logs after a fast command completes.
+The source of truth is `~/.config/portly/config.json`, watched for external changes. Terminal
+layouts live beside it in `studio.json`, and server logs in `~/.config/portly/logs/`.
 
 ```json
 {
@@ -168,12 +240,7 @@ Temporary jobs are intentionally absent from `config.json`. They exist only in t
           "healthURL": null,
           "healthStatus": null,
           "autoRestart": true,
-          "actions": [
-            {
-              "name": "clear-cache",
-              "command": "trash .next/cache"
-            }
-          ]
+          "actions": [{ "name": "clear-cache", "command": "trash .next/cache" }]
         }
       ]
     }
@@ -181,11 +248,16 @@ Temporary jobs are intentionally absent from `config.json`. They exist only in t
 }
 ```
 
-`directory` may be absolute or relative to the project root. Portly provides `PORT`, `PORTLY=1`, and `PORTLY_SERVER` to child processes and configured actions. Actions run as supervised temporary jobs in the server's working directory without restarting or stopping the server. A bare port check connects to `localhost` over IPv4 or IPv6; `healthURL` may be a path such as `/api/health` or a complete URL.
+`directory` may be absolute or relative to the project root. Portly provides `PORT`, `PORTLY=1` and
+`PORTLY_SERVER` to child processes and configured actions. Actions run beside the server, in its
+working directory and with its environment, streaming into its terminal and logs without restarting
+it; one action at a time per server. A bare port check connects to `localhost` over IPv4 or IPv6;
+`healthURL` may be a path such as `/api/health` or a complete URL.
 
 ## Local API
 
-The control API listens only on `127.0.0.1:7737`. It can start processes, so it is deliberately unavailable to the network.
+The control API listens only on `127.0.0.1:7737`. It can start processes, so it is deliberately
+unavailable to the network.
 
 | Method | Route | Purpose |
 | --- | --- | --- |
@@ -193,22 +265,44 @@ The control API listens only on `127.0.0.1:7737`. It can start processes, so it 
 | `GET` | `/status` | Projects and live server state |
 | `GET` | `/config` | Current configuration |
 | `GET` | `/logs?server=web&tail=200` | Recent server output |
-| `GET` | `/temporary/status?id=tmp_1234` | Temporary job state, deadline and exit code |
 | `GET` | `/ports?port=5173` | Process occupying a port |
 | `POST` | `/start`, `/stop`, `/restart` | Act on a server or project |
-| `POST` | `/temporary/run` | Start a supervised background job outside any project |
-| `POST` | `/actions/run` | Run a configured server action without restarting it |
+| `POST` | `/actions/run` | Run a configured server action beside it, into its terminal |
 | `POST` | `/memory-limit` | Configure the global default or a project memory guard |
 | `POST` | `/projects/add`, `/projects/remove` | Mutate projects |
 | `POST` | `/servers/add`, `/servers/update`, `/servers/remove` | Mutate servers |
 | `POST` | `/servers/take-over` | Move an external listener under Portly |
-| `POST` | `/ports/kill` | Send SIGTERM to a port occupant |
+| `POST` | `/ports/kill` | Send `SIGTERM` to a port occupant |
 | `POST` | `/open`, `/quit` | Control the app |
 
-Responses are JSON envelopes with `ok`, `data`, and `error` fields. The CLI is the supported agent-facing interface and handles launching the app and encoding requests.
+Responses are JSON envelopes with `ok`, `data` and `error`. The CLI is the supported agent-facing
+interface and handles launching the app and encoding requests.
 
 ## Agent skill
 
-The distributable skill is in [`skills/portly`](skills/portly). The installer copies it to the canonical personal root at `~/.agents/skills/portly`, which is shared by Codex and Cursor and exposed to Claude through the standard `~/.claude/skills` compatibility link.
+The distributable skill is in [`skills/portly`](skills/portly). The installer copies it to the
+canonical personal root at `~/.agents/skills/portly`, shared by Codex and Cursor and exposed to
+Claude through the standard `~/.claude/skills` compatibility link.
 
-The source installer maintains a marker-delimited rule in `~/.agents/AGENTS.md`. The downloadable app's onboarding also installs it in `~/.claude/CLAUDE.md` so Claude receives the same global fallback. During project setup, the skill requires the same rule in the repository's root `AGENTS.md`; this makes the behavior portable to collaborators and other machines. Every write is idempotent and preserves existing instructions.
+The installer also maintains a marker-delimited rule in `~/.agents/AGENTS.md`; the app's onboarding
+adds the same rule to `~/.claude/CLAUDE.md`. During project setup the skill requires that rule in the
+repository's own root `AGENTS.md`, which makes the behaviour portable to collaborators and other
+machines. Every write is idempotent and preserves existing instructions.
+
+---
+
+## What this fork changes
+
+Compared to upstream Portly:
+
+- **Added** — coding sessions and split agent terminals, workspace trust, the quick terminal, the
+  `.env` panel, keep-awake, the drop zone, Nucleo icons, sidebar search, menu-bar-only mode, and the
+  AI usage rings.
+- **Removed** — temporary jobs (`portly temp` / `portly wait` and their API routes; server actions
+  still run beside a server, streaming into its terminal), the Sparkle auto-updater and its feed
+  (which would replace this build with the stock release), launch telemetry, the landing page, and
+  the Mac App Store companion target.
+
+Upstream Portly is by [Melvynx](https://github.com/Melvynx/portly). AI usage is adapted from
+[Codenotch](https://github.com/vinzdg/codenotch). Both are MIT, and so is this fork — see
+[LICENSE](LICENSE).

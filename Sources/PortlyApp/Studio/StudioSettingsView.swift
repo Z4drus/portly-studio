@@ -5,7 +5,10 @@ import SwiftUI
 /// the shortcut cheat sheet.
 struct StudioSettingsView: View {
     @ObservedObject private var workspace = StudioWorkspace.shared
+    @ObservedObject private var supervisor = Supervisor.shared
     @State private var customCommand = ""
+    @State private var trustStatus: String?
+    @State private var claudeInstalled = ClaudeTrust.isInstalled()
 
     var body: some View {
         Form {
@@ -86,6 +89,29 @@ struct StudioSettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("Workspace trust") {
+                Toggle("Pre-approve new projects in Claude Code", isOn: Binding(
+                    get: { workspace.config.trustNewProjectsInClaudeCode },
+                    set: { value in workspace.updateSettings { $0.trustNewProjectsInClaudeCode = value } }
+                ))
+                .disabled(!claudeInstalled)
+
+                Button("Approve every project now", action: approveEveryProject)
+                    .disabled(!claudeInstalled)
+
+                if let trustStatus {
+                    Text(trustStatus)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Text(claudeInstalled
+                    ? "Claude Code asks \"Is this a project you created or one you trust?\" the first time it runs in a folder. Portly answers it for you by writing the same key its dialog writes, so a new project opens straight on a prompt."
+                    : "Claude Code has no config on this Mac yet. Run it once, then come back: Portly only extends a config that already exists.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Storage") {
                 LabeledContent("Sessions file") {
                     Text(NSString(string: StudioStore.defaultURL.path).abbreviatingWithTildeInPath)
@@ -99,7 +125,26 @@ struct StudioSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .onAppear { customCommand = workspace.config.customAgentCommand }
+        .onAppear {
+            customCommand = workspace.config.customAgentCommand
+            claudeInstalled = ClaudeTrust.isInstalled()
+        }
+    }
+
+    /// Catches up the projects that existed before the toggle, and the ones
+    /// whose entry Claude Code dropped.
+    private func approveEveryProject() {
+        let roots = supervisor.projects.map(\.root)
+        do {
+            let approved = try ClaudeTrust.approve(roots: roots)
+            switch approved {
+            case 0: trustStatus = "Claude Code already trusted all \(roots.count) project folders."
+            case 1: trustStatus = "Approved 1 project folder in Claude Code."
+            default: trustStatus = "Approved \(approved) project folders in Claude Code."
+            }
+        } catch {
+            trustStatus = error.localizedDescription
+        }
     }
 
     private var agentBinding: Binding<AgentPreset> {

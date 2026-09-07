@@ -18,6 +18,8 @@ struct MenuBarContent: View {
 
             Divider()
 
+            MenuBarUsageRows()
+
             if supervisor.projects.isEmpty {
                 emptyState
             } else {
@@ -210,6 +212,123 @@ private struct MenuBarServerRow: View {
             AppSelection.shared.pending = .server(runtime.id)
             WindowOpener.openMainWindow()
         }
+    }
+}
+
+/// The AI usage readings in the popover: one line per assistant, so the
+/// answer is there in menu-bar-only mode without opening a window.
+private struct MenuBarUsageRows: View {
+    @ObservedObject private var center = UsageCenter.shared
+    @ObservedObject private var store: UsageStore
+    @ObservedObject private var preferences: UsagePreferences
+    @State private var now = Date()
+
+    init() {
+        let center = UsageCenter.shared
+        _store = ObservedObject(wrappedValue: center.store)
+        _preferences = ObservedObject(wrappedValue: center.preferences)
+    }
+
+    var body: some View {
+        if preferences.showInMenuBar, !center.displaySnapshots.isEmpty {
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 6) {
+                    NucleoIconView(.sparkle, size: 11)
+                        .foregroundStyle(.secondary)
+                    Text("AI usage")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.top, 6)
+                .padding(.bottom, 2)
+
+                ForEach(center.displaySnapshots) { snapshot in
+                    MenuBarUsageRow(
+                        snapshot: snapshot,
+                        activity: center.activity(for: snapshot.id),
+                        isRefreshing: store.refreshing.contains(snapshot.id),
+                        now: now
+                    ) {
+                        center.refresh(providerID: snapshot.id)
+                    }
+                }
+            }
+            .padding(.bottom, 6)
+            .onAppear { now = Date() }
+
+            Divider()
+        }
+    }
+}
+
+private struct MenuBarUsageRow: View {
+    let snapshot: ProviderSnapshot
+    let activity: ActivitySummary?
+    let isRefreshing: Bool
+    let now: Date
+    let onRefresh: () -> Void
+
+    @State private var hovering = false
+
+    private var band: UsageBand { UsageBand.band(for: snapshot.usedFraction ?? 0) }
+
+    /// The headline window's reset, or the reason there is no reading.
+    private var detail: String {
+        if let message = snapshot.statusMessage { return message }
+        guard let headline = snapshot.headline else { return "" }
+        let reset = headline.resetsAt.map { ResetCopy.text(for: $0, now: now) }
+        return [headline.label, reset].compactMap { $0 }.joined(separator: " · ")
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            MiniUsageRing(snapshot: snapshot, size: 15)
+
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 5) {
+                    Text(snapshot.displayName)
+                        .font(.system(size: 12))
+                        .lineLimit(1)
+                    if let activity, activity.state != .idle {
+                        Text(activity.label)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(activity.state == .waiting ? Color.orange : Color.accentColor)
+                    }
+                }
+                Text(detail)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 4)
+
+            if isRefreshing {
+                ProgressView()
+                    .controlSize(.mini)
+                    .frame(width: 12, height: 12)
+            }
+            Text(snapshot.hasReading ? snapshot.headlineText : "—")
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .monospacedDigit()
+                .foregroundStyle(snapshot.hasReading ? band.tint : Color.secondary)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 3)
+        .background(
+            RoundedRectangle(cornerRadius: 5)
+                .fill(hovering ? Color.secondary.opacity(0.12) : Color.clear)
+                .padding(.horizontal, 6)
+        )
+        .animation(Motion.hover, value: hovering)
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .onTapGesture(perform: onRefresh)
+        .help("Click to refresh \(snapshot.displayName)'s reading")
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(snapshot.displayName) \(snapshot.headlineText) used")
     }
 }
 

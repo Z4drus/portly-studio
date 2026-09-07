@@ -5,7 +5,7 @@ import SwiftUI
 /// The terminal plus everything you need to act on one server.
 struct ServerDetail: View {
     @ObservedObject var runtime: ServerRuntime
-    let onEdit: (() -> Void)?
+    let onEdit: () -> Void
 
     @EnvironmentObject private var supervisor: Supervisor
     @State private var conflict: PortOccupant?
@@ -100,9 +100,12 @@ struct ServerDetail: View {
                             }
                         }
                     } label: {
-                        NucleoLabel("Actions", icon: .bolt)
+                        NucleoLabel(runtime.runningAction.map { "Running \($0.name)…" } ?? "Actions", icon: .bolt)
                     }
-                    .help("Run a maintenance action without restarting the server")
+                    .disabled(runtime.runningAction != nil || runtime.isInstallingDependencies)
+                    .help(runtime.runningAction == nil
+                        ? "Run a maintenance action beside the server; its output goes to this terminal"
+                        : "Wait for the current action to finish")
                 }
 
                 if let url = runtime.url {
@@ -132,10 +135,8 @@ struct ServerDetail: View {
                         .help("Clear the terminal")
                 }
 
-                if let onEdit {
-                    Button(action: onEdit) { NucleoLabel("Edit", icon: .sliders) }
-                        .help("Edit this server")
-                }
+                Button(action: onEdit) { NucleoLabel("Edit", icon: .sliders) }
+                    .help("Edit this server")
             }
         }
         .navigationTitle(runtime.config.name)
@@ -243,13 +244,13 @@ struct ServerDetail: View {
 
     private var stoppedState: some View {
         VStack(spacing: 12) {
-            NucleoIconView(stoppedIcon, size: 32)
-                .foregroundStyle(runtime.temporaryJobStatus?.state == .succeeded ? Color.green : Color.secondary)
+            NucleoIconView(.terminal, size: 32)
+                .foregroundStyle(.secondary)
 
             VStack(spacing: 4) {
-                Text(stoppedTitle)
+                Text("Server is stopped")
                     .font(PortlyTypography.title)
-                Text(stoppedMessage)
+                Text("Start \(runtime.config.name) to see its live terminal output.")
                     .font(PortlyTypography.body)
                     .foregroundStyle(.secondary)
             }
@@ -259,7 +260,7 @@ struct ServerDetail: View {
                 Button {
                     runtime.start()
                 } label: {
-                    NucleoLabel(runtime.isTemporaryJob ? "Run Again" : "Start", icon: .play)
+                    NucleoLabel("Start", icon: .play)
                 }
                 .buttonStyle(runtime.canStart ? AnyPrimitiveButtonStyle(.borderedProminent) : AnyPrimitiveButtonStyle(.bordered))
                 .controlSize(.large)
@@ -275,34 +276,6 @@ struct ServerDetail: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private var stoppedIcon: AppIcon {
-        switch runtime.temporaryJobStatus?.state {
-        case .succeeded: return .checkCircle
-        case .failed, .timedOut: return .xmarkCircle
-        default: return .terminal
-        }
-    }
-
-    private var stoppedTitle: String {
-        guard let job = runtime.temporaryJobStatus else { return "Server is stopped" }
-        switch job.state {
-        case .succeeded: return "Job succeeded"
-        case .failed: return "Job failed"
-        case .timedOut: return "Job timed out"
-        case .stopped: return "Job stopped"
-        case .running: return "Job is running"
-        }
-    }
-
-    private var stoppedMessage: String {
-        guard let job = runtime.temporaryJobStatus else {
-            return "Start \(runtime.config.name) to see its live terminal output."
-        }
-        let duration = job.elapsedSeconds.map { String(format: "%.1f seconds", $0) } ?? "an unknown duration"
-        let exitCode = job.exitCode.map { " with exit code \($0)" } ?? ""
-        return "Finished in \(duration)\(exitCode). Its captured output remains available here for one hour."
     }
 
     // MARK: - Info bar
@@ -324,8 +297,8 @@ struct ServerDetail: View {
                 if let startedAt = runtime.startedAt, runtime.isRunning {
                     fact("Up \(startedAt.compactUptime)", icon: .clock)
                 }
-                if let job = runtime.temporaryJobStatus {
-                    fact(jobFact(job), icon: job.state == .running ? .timer : .checkCircle)
+                if let action = runtime.runningAction {
+                    fact("Action \(action.name)", icon: .bolt)
                 }
                 if runtime.restartCount > 0 {
                     fact(
@@ -417,16 +390,6 @@ struct ServerDetail: View {
             .font(PortlyTypography.metadata)
             .foregroundStyle(.secondary)
             .monospacedDigit()
-    }
-
-    private func jobFact(_ job: TemporaryJobStatus) -> String {
-        switch job.state {
-        case .running: return "Timeout \(TemporaryTimeout.display(job.timeoutSeconds))"
-        case .succeeded: return "Succeeded"
-        case .failed: return job.exitCode.map { "Failed · exit \($0)" } ?? "Failed"
-        case .timedOut: return "Timed out · \(TemporaryTimeout.display(job.timeoutSeconds))"
-        case .stopped: return "Stopped"
-        }
     }
 
     private func compactResource(

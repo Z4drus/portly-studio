@@ -33,8 +33,6 @@ func fail(_ message: String) -> Never {
 
 extension ServerStatus {
     var stateGlyph: String {
-        if timedOut == true { return "✕" }
-        if temporary == true, finishedAt != nil, lastExitCode == 0 { return "✓" }
         switch state {
         case .running: return "●"
         case .starting, .restarting: return "◐"
@@ -46,26 +44,14 @@ extension ServerStatus {
 
     var detailedLine: String {
         let port = self.port.map { ":\($0)" } ?? ""
-        let duration = startedAt.map { started in
-            let end = finishedAt ?? Date()
-            return " \(finishedAt == nil ? "up" : "duration") \(Int(end.timeIntervalSince(started)))s"
-        } ?? ""
+        let uptime = startedAt.map { " up \(Int(Date().timeIntervalSince($0)))s" } ?? ""
         let restarts = restartCount > 0 ? " restarts:\(restartCount)" : ""
         let cpu = cpuPercent.map { " cpu:\($0.formatted(.number.precision(.fractionLength(1))))%" } ?? ""
         let memory = memoryBytes.map { " footprint:\(ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .memory))" } ?? ""
         let resident = residentMemoryBytes.map { " resident:\(ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .memory))" } ?? ""
         let processes = processCount.map { " processes:\($0)" } ?? ""
-        let outcome: String
-        if timedOut == true {
-            outcome = "timed-out"
-        } else if temporary == true, finishedAt != nil, lastExitCode == 0 {
-            outcome = "succeeded"
-        } else {
-            outcome = state.rawValue
-        }
-        let timeout = timeoutSeconds.map { " timeout:\(TemporaryTimeout.display($0))" } ?? ""
         let exitCode = lastExitCode.map { " exit:\($0)" } ?? ""
-        return "  \(stateGlyph) \(name)\(port)  \(outcome)\(duration)\(timeout)\(exitCode)\(cpu)\(memory)\(resident)\(processes)\(restarts)"
+        return "  \(stateGlyph) \(name)\(port)  \(state.rawValue)\(uptime)\(exitCode)\(cpu)\(memory)\(resident)\(processes)\(restarts)"
     }
 }
 
@@ -75,13 +61,9 @@ private struct NamedServerStatus {
 }
 
 private func namedServers(in status: PortlyStatus) -> [NamedServerStatus] {
-    let projectServers = status.projects.flatMap { project in
+    status.projects.flatMap { project in
         project.servers.map { NamedServerStatus(name: "\(project.name)/\($0.name)", status: $0) }
     }
-    let temporaryServers = status.temporaryServers.map {
-        NamedServerStatus(name: "Temporary/\($0.name)", status: $0)
-    }
-    return projectServers + temporaryServers
 }
 
 private func compactLine(_ item: NamedServerStatus, nameWidth: Int) -> String {
@@ -109,18 +91,13 @@ private func compactLine(_ item: NamedServerStatus, nameWidth: Int) -> String {
 func renderCompact(_ status: PortlyStatus) -> String {
     let servers = namedServers(in: status)
     guard !servers.isEmpty else {
-        return "No servers configured. Use 'portly temp' for one-off work, or add a project for long-lived services."
+        return "No servers configured. Add a project and a server to get started."
     }
 
     let runningCount = servers.filter { $0.status.state == .running }.count
     let transitioningCount = servers.filter { [.starting, .restarting].contains($0.status.state) }.count
     let problemCount = servers.filter { [.unhealthy, .failed].contains($0.status.state) }.count
-    let completedCount = servers.filter {
-        $0.status.temporary == true && $0.status.finishedAt != nil && $0.status.lastExitCode == 0
-    }.count
-    let stoppedCount = servers.filter {
-        $0.status.state == .stopped && !($0.status.temporary == true && $0.status.finishedAt != nil)
-    }.count
+    let stoppedCount = servers.filter { $0.status.state == .stopped }.count
     let visible = servers.filter { $0.status.state != .stopped }
 
     var summary = ["\(runningCount) running"]
@@ -128,9 +105,6 @@ func renderCompact(_ status: PortlyStatus) -> String {
         summary.append("\(transitioningCount) starting")
     }
     summary.append("\(problemCount) problem\(problemCount == 1 ? "" : "s")")
-    if completedCount > 0 {
-        summary.append("\(completedCount) completed")
-    }
     summary.append("\(stoppedCount) stopped")
 
     guard !visible.isEmpty else {
@@ -143,8 +117,8 @@ func renderCompact(_ status: PortlyStatus) -> String {
 }
 
 func renderDetailed(_ status: PortlyStatus) -> String {
-    guard !status.projects.isEmpty || !status.temporaryServers.isEmpty else {
-        return "Nothing running yet. Use 'portly temp' for small one-off work, or add a project for long-lived services."
+    guard !status.projects.isEmpty else {
+        return "Nothing configured yet. Add a project and a server to get started."
     }
     var out: [String] = []
     for project in status.projects {
@@ -160,10 +134,6 @@ func renderDetailed(_ status: PortlyStatus) -> String {
             out.append(contentsOf: project.servers.map(\.detailedLine))
         }
         out.append("")
-    }
-    if !status.temporaryServers.isEmpty {
-        out.append("Temporary")
-        out.append(contentsOf: status.temporaryServers.map(\.detailedLine))
     }
     return out.joined(separator: "\n").trimmingCharacters(in: .newlines)
 }
@@ -183,7 +153,7 @@ struct Portly: ParsableCommand {
         version: portlyVersion,
         subcommands: [
             Status.self, Start.self, Stop.self, Restart.self, Action.self, Logs.self,
-            Temp.self, Wait.self, AddProject.self, AddServer.self, UpdateServer.self,
+            AddProject.self, AddServer.self, UpdateServer.self,
             MemoryLimit.self, Remove.self, TakeOver.self, Port.self, KillPort.self, Open.self, Quit.self, Forever.self, Config.self,
         ],
         defaultSubcommand: Status.self
@@ -280,7 +250,8 @@ struct Restart: ParsableCommand {
 struct Action: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "action",
-        abstract: "Run a configured server action without restarting the server."
+        abstract: "Run a configured server action beside the server, without restarting it.",
+        discussion: "The action runs in the server's working directory with its environment, and its output goes to the server's terminal and logs. Read them with 'portly logs <server>'."
     )
 
     @Argument(help: "Server name or id. Use project/server to disambiguate.")
@@ -289,23 +260,13 @@ struct Action: ParsableCommand {
     @Argument(help: "Configured action name, for example clear-cache.")
     var action: String
 
-    @Option(name: .long, help: "Maximum runtime, for example 30s, 10m, or 2h.")
-    var timeout = "30m"
-
     @OptionGroup var options: GlobalOptions
 
     func run() throws {
-        guard let timeoutSeconds = TemporaryTimeout.parse(timeout) else {
-            fail("Bad --timeout '\(timeout)'. Use 30s, 10m, 2h, or seconds up to 7 days")
-        }
-        let body = PortlyAPI.RunServerActionRequest(
-            server: server,
-            action: action,
-            timeoutSeconds: timeoutSeconds
-        )
+        let body = PortlyAPI.RunServerActionRequest(server: server, action: action)
         do {
-            let job = try client(options).post("actions/run", body, as: TemporaryJobStatus.self)
-            emit(job, json: options.json) { $0.id }
+            let response = try client(options).post("actions/run", body, as: PortlyAPI.ActionResponse.self)
+            emit(response, json: options.json) { $0.message }
         } catch {
             fail(error.localizedDescription)
         }
@@ -337,139 +298,6 @@ struct Logs: ParsableCommand {
 }
 
 // MARK: - Config mutations
-
-struct Temp: ParsableCommand {
-    static let configuration = CommandConfiguration(
-        commandName: "temp",
-        abstract: "Run a short-lived process without creating a project.",
-        discussion: "The command starts in the background, returns a job ID immediately, and is stopped with its entire process group at the timeout. Use 'portly wait <id>' to collect the result.",
-        aliases: ["temporary", "run-temp"]
-    )
-
-    @Argument(help: "Command to run through a login shell, for example 'npm run build'.")
-    var command: String?
-
-    @Option(name: .long, help: "Short label shown in Portly. Defaults to the command.")
-    var name: String?
-
-    @Option(name: .customLong("command"), help: "Command option kept for compatibility; prefer the positional command.")
-    var commandOption: String?
-
-    @Option(name: .long, help: "Working directory. Defaults to the current directory.")
-    var path = FileManager.default.currentDirectoryPath
-
-    @Option(name: .long, help: "Optional port to monitor.")
-    var port: Int?
-
-    @Option(name: .long, help: "Optional health check path or URL.")
-    var healthUrl: String?
-
-    @Option(name: .long, help: "Maximum runtime: seconds or a value such as 30s, 10m, or 2h.")
-    var timeout = "30m"
-
-    @Option(name: .long, parsing: .upToNextOption, help: "Environment variables as KEY=VALUE.")
-    var env: [String] = []
-
-    @OptionGroup var options: GlobalOptions
-
-    func run() throws {
-        guard command == nil || commandOption == nil else {
-            fail("Pass the command either positionally or with --command, not both")
-        }
-        guard let selectedCommand = (command ?? commandOption)?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !selectedCommand.isEmpty else {
-            fail("Missing command. Example: portly temp 'npm run build'")
-        }
-        guard let timeoutSeconds = TemporaryTimeout.parse(timeout) else {
-            fail("Bad --timeout '\(timeout)'. Use 30s, 10m, 2h, or seconds up to 7 days")
-        }
-        let selectedName = name.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .flatMap { $0.isEmpty ? nil : $0 }
-            ?? selectedCommand.split(whereSeparator: \.isWhitespace).prefix(4).joined(separator: " ")
-        var parsedEnvironment: [String: String] = [:]
-        for entry in env {
-            let parts = entry.split(separator: "=", maxSplits: 1)
-            guard parts.count == 2 else { fail("Bad --env value '\(entry)', expected KEY=VALUE") }
-            parsedEnvironment[String(parts[0])] = String(parts[1])
-        }
-        let body = PortlyAPI.RunTemporaryRequest(
-            name: selectedName,
-            command: selectedCommand,
-            directory: path,
-            port: port,
-            env: parsedEnvironment.isEmpty ? nil : parsedEnvironment,
-            healthURL: healthUrl,
-            timeoutSeconds: timeoutSeconds
-        )
-        do {
-            let job = try client(options).post("temporary/run", body, as: TemporaryJobStatus.self)
-            emit(job, json: options.json) { $0.id }
-        } catch {
-            fail(error.localizedDescription)
-        }
-    }
-}
-
-// MARK: - Temporary jobs
-
-struct Wait: ParsableCommand {
-    static let configuration = CommandConfiguration(
-        commandName: "wait",
-        abstract: "Wait for a temporary job and return its exit code.",
-        discussion: "The job keeps running under Portly if this command is interrupted. Completed job metadata remains available for one hour."
-    )
-
-    @Argument(help: "Temporary job ID returned by 'portly temp'.")
-    var id: String
-
-    @Option(name: .shortAndLong, help: "Maximum number of captured log lines to print after completion.")
-    var tail = 500
-
-    @Flag(name: .customLong("no-logs"), help: "Print only the final result.")
-    var noLogs = false
-
-    @OptionGroup var options: GlobalOptions
-
-    func run() throws {
-        let escaped = id.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? id
-        var job: TemporaryJobStatus
-        do {
-            job = try client(options).get("temporary/status?id=\(escaped)", as: TemporaryJobStatus.self)
-            while !job.state.isFinished {
-                Thread.sleep(forTimeInterval: 0.25)
-                job = try client(options).get("temporary/status?id=\(escaped)", as: TemporaryJobStatus.self)
-            }
-
-            if options.json {
-                emit(job, json: true) { _ in "" }
-            } else {
-                if !noLogs {
-                    Thread.sleep(forTimeInterval: 0.1)
-                    let count = min(max(tail, 1), 5_000)
-                    let logs = try client(options).get("logs?server=\(escaped)&tail=\(count)", as: PortlyAPI.LogsResponse.self)
-                    if !logs.lines.isEmpty { print(logs.lines.joined(separator: "\n")) }
-                }
-                print(jobSummary(job))
-            }
-        } catch {
-            fail(error.localizedDescription)
-        }
-
-        Darwin.exit(job.processExitCode)
-    }
-}
-
-private func jobSummary(_ job: TemporaryJobStatus) -> String {
-    let elapsed = job.elapsedSeconds.map { String(format: "%.1fs", $0) } ?? "unknown duration"
-    let exitCode = job.exitCode.map { " · exit \($0)" } ?? ""
-    switch job.state {
-    case .succeeded: return "✓ \(job.id) succeeded · \(elapsed)\(exitCode)"
-    case .failed: return "✕ \(job.id) failed · \(elapsed)\(exitCode)"
-    case .timedOut: return "✕ \(job.id) timed out after \(TemporaryTimeout.display(job.timeoutSeconds))"
-    case .stopped: return "○ \(job.id) stopped · \(elapsed)"
-    case .running: return "◐ \(job.id) running"
-    }
-}
 
 struct AddProject: ParsableCommand {
     static let configuration = CommandConfiguration(

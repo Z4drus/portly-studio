@@ -17,6 +17,6 @@ Harassment, threats, discrimination, doxxing, sexualized attention, and sustaine
 
 ## Enforcement
 
-Report unacceptable behavior to `melvyn@melvynx.com`. Reports will be reviewed promptly and handled as privately as possible. Maintainers may remove content or restrict participation when needed to protect the community.
+Report unacceptable behavior through a [private security advisory](https://github.com/Z4drus/portly-studio/security/advisories/new). Reports will be reviewed promptly and handled as privately as possible. Maintainers may remove content or restrict participation when needed to protect the community.
 
 This code of conduct applies to the repository, issue tracker, pull requests, discussions, and project-related public spaces.

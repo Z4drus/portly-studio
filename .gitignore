@@ -1,13 +1,3 @@
 .build/
 dist/
 .DS_Store
-website/node_modules/
-website/.output/
-website/.tanstack/
-website/.vercel/
-website/.vite/
-website/.wrangler/
-website/dev-dist/
-StoreApp/build/
-cli/portly
-.vercel

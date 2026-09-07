@@ -291,103 +291,6 @@ public enum ServerState: String, Codable, Hashable {
     case failed
 }
 
-public enum TemporaryJobState: String, Codable, Hashable {
-    case running
-    case succeeded
-    case failed
-    case timedOut
-    case stopped
-
-    public var isFinished: Bool { self != .running }
-}
-
-public struct TemporaryJobStatus: Codable, Identifiable, Hashable {
-    public var id: String
-    public var name: String
-    public var command: String
-    public var directory: String
-    public var state: TemporaryJobState
-    public var pid: Int32?
-    public var startedAt: Date?
-    public var finishedAt: Date?
-    public var timeoutSeconds: Int
-    public var deadline: Date?
-    public var exitCode: Int32?
-    public var error: String?
-
-    public init(
-        id: String,
-        name: String,
-        command: String,
-        directory: String,
-        state: TemporaryJobState,
-        pid: Int32?,
-        startedAt: Date?,
-        finishedAt: Date?,
-        timeoutSeconds: Int,
-        deadline: Date?,
-        exitCode: Int32?,
-        error: String?
-    ) {
-        self.id = id
-        self.name = name
-        self.command = command
-        self.directory = directory
-        self.state = state
-        self.pid = pid
-        self.startedAt = startedAt
-        self.finishedAt = finishedAt
-        self.timeoutSeconds = timeoutSeconds
-        self.deadline = deadline
-        self.exitCode = exitCode
-        self.error = error
-    }
-
-    public var elapsedSeconds: TimeInterval? {
-        guard let startedAt else { return nil }
-        return (finishedAt ?? Date()).timeIntervalSince(startedAt)
-    }
-
-    public var processExitCode: Int32 {
-        switch state {
-        case .succeeded: return 0
-        case .timedOut: return 124
-        case .stopped: return 130
-        case .failed: return exitCode.flatMap { $0 == 0 ? nil : $0 } ?? 1
-        case .running: return 0
-        }
-    }
-}
-
-public enum TemporaryTimeout {
-    public static let defaultSeconds = 30 * 60
-    public static let maximumSeconds = 7 * 24 * 60 * 60
-
-    public static func parse(_ raw: String) -> Int? {
-        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !value.isEmpty else { return nil }
-
-        let multiplier: Double
-        let number: Substring
-        switch value.last {
-        case "s": multiplier = 1; number = value.dropLast()
-        case "m": multiplier = 60; number = value.dropLast()
-        case "h": multiplier = 3_600; number = value.dropLast()
-        default: multiplier = 1; number = Substring(value)
-        }
-        guard let amount = Double(number), amount > 0 else { return nil }
-        let seconds = Int(ceil(amount * multiplier))
-        guard seconds <= maximumSeconds else { return nil }
-        return seconds
-    }
-
-    public static func display(_ seconds: Int) -> String {
-        if seconds.isMultiple(of: 3_600) { return "\(seconds / 3_600)h" }
-        if seconds.isMultiple(of: 60) { return "\(seconds / 60)m" }
-        return "\(seconds)s"
-    }
-}
-
 public struct ServerStatus: Codable, Identifiable, Hashable {
     public var id: String
     public var name: String
@@ -410,11 +313,6 @@ public struct ServerStatus: Codable, Identifiable, Hashable {
     /// Portion of the process tree currently resident in RAM.
     public var residentMemoryBytes: UInt64?
     public var processCount: Int?
-    public var temporary: Bool?
-    public var timeoutSeconds: Int?
-    public var deadline: Date?
-    public var finishedAt: Date?
-    public var timedOut: Bool?
     /// The port from the configuration when the server had to start elsewhere.
     public var configuredPort: Int?
     /// Every TCP port the process tree listens on, beyond the primary one.
@@ -427,8 +325,6 @@ public struct ServerStatus: Codable, Identifiable, Hashable {
         lastError: String?, healthy: Bool, url: String?,
         cpuPercent: Double? = nil, memoryBytes: UInt64? = nil,
         residentMemoryBytes: UInt64? = nil, processCount: Int? = nil,
-        temporary: Bool? = nil, timeoutSeconds: Int? = nil,
-        deadline: Date? = nil, finishedAt: Date? = nil, timedOut: Bool? = nil,
         configuredPort: Int? = nil, extraPorts: [Int]? = nil
     ) {
         self.id = id
@@ -450,11 +346,6 @@ public struct ServerStatus: Codable, Identifiable, Hashable {
         self.memoryBytes = memoryBytes
         self.residentMemoryBytes = residentMemoryBytes
         self.processCount = processCount
-        self.temporary = temporary
-        self.timeoutSeconds = timeoutSeconds
-        self.deadline = deadline
-        self.finishedAt = finishedAt
-        self.timedOut = timedOut
         self.configuredPort = configuredPort
         self.extraPorts = extraPorts
     }
@@ -520,31 +411,17 @@ public struct PortlyStatus: Codable {
     public var apiPort: Int
     public var globalMemoryLimitBytes: UInt64?
     public var projects: [ProjectStatus]
-    /// Ephemeral processes supervised for the current app session. They are not
-    /// projects and never persist in config.json.
-    public var temporaryServers: [ServerStatus]
 
     public init(
         version: String,
         apiPort: Int,
         globalMemoryLimitBytes: UInt64? = nil,
-        projects: [ProjectStatus],
-        temporaryServers: [ServerStatus] = []
+        projects: [ProjectStatus]
     ) {
         self.version = version
         self.apiPort = apiPort
         self.globalMemoryLimitBytes = globalMemoryLimitBytes
         self.projects = projects
-        self.temporaryServers = temporaryServers
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        version = try container.decode(String.self, forKey: .version)
-        apiPort = try container.decode(Int.self, forKey: .apiPort)
-        globalMemoryLimitBytes = try container.decodeIfPresent(UInt64.self, forKey: .globalMemoryLimitBytes)
-        projects = try container.decode([ProjectStatus].self, forKey: .projects)
-        temporaryServers = try container.decodeIfPresent([ServerStatus].self, forKey: .temporaryServers) ?? []
     }
 }
 

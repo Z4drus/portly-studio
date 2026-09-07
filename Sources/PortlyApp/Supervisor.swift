@@ -30,14 +30,13 @@ final class Supervisor: ObservableObject {
     @Published private(set) var resourceHistory: [ResourceHistoryPoint] = []
     @Published private(set) var projectResourceHistory: [ProjectResourceHistoryPoint] = []
     @Published private(set) var externalProcesses: [ExternalProcessSnapshot] = []
-    @Published private(set) var temporaryRuntimeIDs: [String] = []
     @Published private(set) var memoryLimitRestarts: [String: MemoryLimitRestartEvent] = [:]
     /// Bumped on any runtime state change so SwiftUI redraws the lists.
     @Published private(set) var revision: Int = 0
 
     private let store: ConfigStore
     private(set) var runtimes: [String: ServerRuntime] = [:]
-    private let metricsQueue = DispatchQueue(label: "dev.melvynx.portly.process-metrics", qos: .utility)
+    private let metricsQueue = DispatchQueue(label: "dev.portly.studio.process-metrics", qos: .utility)
     private var metricsTimer: Timer?
     private var metricsSampleInFlight = false
     private var metricsSampleSequence = 0
@@ -84,22 +83,15 @@ final class Supervisor: ObservableObject {
             }
         }
         // A server removed from the config must not keep running.
-        let temporaryIDs = Set(temporaryRuntimeIDs)
-        for (id, runtime) in runtimes where !seen.contains(id) && !temporaryIDs.contains(id) {
+        for (id, runtime) in runtimes where !seen.contains(id) {
             runtime.stop()
             runtimes.removeValue(forKey: id)
         }
     }
 
-    private func wire(_ runtime: ServerRuntime, temporary: Bool = false) {
-        runtime.onStateChange = { [weak self, weak runtime] in
-            DispatchQueue.main.async {
-                guard let self else { return }
-                self.bump()
-                if temporary, runtime?.isRunning == false {
-                    self.scheduleTemporaryCleanup(runtimeID: runtime?.id)
-                }
-            }
+    private func wire(_ runtime: ServerRuntime) {
+        runtime.onStateChange = { [weak self] in
+            DispatchQueue.main.async { self?.bump() }
         }
         runtime.onFailed = { runtime in
             Notifications.serverFailed(name: runtime.config.name, project: runtime.projectName, reason: runtime.lastError)
@@ -113,22 +105,6 @@ final class Supervisor: ObservableObject {
 
     private func bump() {
         revision &+= 1
-    }
-
-    private func scheduleTemporaryCleanup(runtimeID: String?) {
-        guard let runtimeID, let completedAt = runtimes[runtimeID]?.temporaryFinishedAt else { return }
-        // Keep completed jobs long enough for a detached agent to call
-        // `portly wait <id>` and inspect logs/result after a fast command exits.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3_600) { [weak self] in
-            guard let self,
-                  self.temporaryRuntimeIDs.contains(runtimeID),
-                  let runtime = self.runtimes[runtimeID],
-                  runtime.isRunning == false,
-                  runtime.temporaryFinishedAt == completedAt else { return }
-            self.runtimes.removeValue(forKey: runtimeID)
-            self.temporaryRuntimeIDs.removeAll { $0 == runtimeID }
-            self.bump()
-        }
     }
 
     private func startMetricsTimer() {
@@ -291,14 +267,6 @@ final class Supervisor: ObservableObject {
 
     func runtime(for id: String) -> ServerRuntime? { runtimes[id] }
 
-    var temporaryRuntimes: [ServerRuntime] {
-        temporaryRuntimeIDs.compactMap { runtimes[$0] }
-    }
-
-    var visibleTemporaryRuntimes: [ServerRuntime] {
-        temporaryRuntimes.filter(\.isRunning)
-    }
-
     func runtimes(inProject id: String) -> [ServerRuntime] {
         guard let project = store.config.project(id: id) else { return [] }
         return project.servers.compactMap { runtimes[$0.id] }
@@ -326,8 +294,7 @@ final class Supervisor: ObservableObject {
                     lastMemoryRestartAt: memoryRestart?.timestamp,
                     lastMemoryRestartBytes: memoryRestart?.footprintBytes
                 )
-            },
-            temporaryServers: temporaryRuntimes.map(\.status)
+            }
         )
     }
 
@@ -364,7 +331,7 @@ final class Supervisor: ObservableObject {
     func prepareForUpdaterRelaunch() {
         let relaunchState = UpdaterRelaunchStateStore(url: updaterRelaunchStateURL)
         let ids = runtimes.values
-            .filter { $0.isRunning && !temporaryRuntimeIDs.contains($0.id) }
+            .filter(\.isRunning)
             .map(\.id)
             .sorted()
 
@@ -453,8 +420,21 @@ final class Supervisor: ObservableObject {
             memoryLimitBytes: memoryLimitBytes
         )
         store.mutate { $0.projects.append(project) }
+        approveInClaudeCode(project.root)
         refresh()
         return project
+    }
+
+    /// Answers Claude Code's workspace trust dialog for a folder Portly created,
+    /// so the first agent terminal opened there starts on a prompt instead of a
+    /// safety check. Never fatal: the project exists either way.
+    private func approveInClaudeCode(_ root: String) {
+        guard StudioWorkspace.shared.config.trustNewProjectsInClaudeCode else { return }
+        do {
+            _ = try ClaudeTrust.approve(root: root)
+        } catch {
+            NSLog("[portly] could not pre-approve \(root) in Claude Code: \(error)")
+        }
     }
 
     func updateProject(_ project: Project) {
@@ -506,77 +486,13 @@ final class Supervisor: ObservableObject {
         return added
     }
 
+    /// Runs a configured maintenance action beside its server. False when
+    /// another command already owns that server's terminal.
     @discardableResult
-    func runTemporary(
-        name: String,
-        command: String,
-        directory: String,
-        port: Int?,
-        env: [String: String] = [:],
-        healthURL: String? = nil,
-        healthStatus: Int? = nil,
-        timeoutSeconds: Int = TemporaryTimeout.defaultSeconds
-    ) -> ServerRuntime {
-        let resolvedDirectory = NSString(string: directory).expandingTildeInPath
-        let resolvedName = uniqueTemporaryName(name)
-        let server = ServerConfig(
-            id: "tmp_" + String(UUID().uuidString.prefix(8)).lowercased(),
-            name: resolvedName,
-            command: command,
-            port: port,
-            env: env,
-            healthURL: healthURL,
-            healthStatus: healthStatus,
-            autoRestart: false
-        )
-        let temporaryProject = Project(
-            id: Supervisor.temporaryProjectID,
-            name: "Temporary",
-            icon: "clock.badge",
-            color: Supervisor.temporaryProjectColor,
-            root: resolvedDirectory,
-            servers: [server]
-        )
-        let runtime = ServerRuntime(config: server, project: temporaryProject, settings: store.config)
-        runtime.configureTemporaryJob(timeoutSeconds: timeoutSeconds)
-        wire(runtime, temporary: true)
-        runtimes[server.id] = runtime
-        temporaryRuntimeIDs.append(server.id)
-        bump()
-        runtime.start()
-        return runtime
-    }
-
-    @discardableResult
-    func runAction(
-        _ action: ServerAction,
-        for runtime: ServerRuntime,
-        timeoutSeconds: Int = TemporaryTimeout.defaultSeconds
-    ) -> ServerRuntime {
-        var env = runtime.config.env
-        env["PORTLY_SERVER"] = runtime.config.name
-        if let port = runtime.config.port {
-            env["PORT"] = String(port)
-        }
-        return runTemporary(
-            name: "\(runtime.config.name): \(action.name)",
-            command: action.command,
-            directory: runtime.workingDirectory,
-            port: nil,
-            env: env,
-            timeoutSeconds: timeoutSeconds
-        )
-    }
-
-    private func uniqueTemporaryName(_ requestedName: String) -> String {
-        let base = requestedName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? "Temporary process"
-            : requestedName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let existing = Set(temporaryRuntimes.map { $0.config.name.lowercased() })
-        guard existing.contains(base.lowercased()) else { return base }
-        var suffix = 2
-        while existing.contains("\(base) \(suffix)".lowercased()) { suffix += 1 }
-        return "\(base) \(suffix)"
+    func runAction(_ action: ServerAction, for runtime: ServerRuntime) -> Bool {
+        let started = runtime.runAction(action)
+        if started { bump() }
+        return started
     }
 
     func updateServer(_ server: ServerConfig) {
@@ -592,17 +508,6 @@ final class Supervisor: ObservableObject {
     }
 
     func removeServer(id: String) {
-        if temporaryRuntimeIDs.contains(id) {
-            guard let runtime = runtime(for: id) else { return }
-            if runtime.isRunning {
-                runtime.stop { [weak self] in
-                    self?.removeTemporaryRuntime(id: id)
-                }
-            } else {
-                removeTemporaryRuntime(id: id)
-            }
-            return
-        }
         runtime(for: id)?.stop()
         store.mutate { config in
             for (pIdx, project) in config.projects.enumerated() {
@@ -613,12 +518,6 @@ final class Supervisor: ObservableObject {
             }
         }
         refresh()
-    }
-
-    private func removeTemporaryRuntime(id: String) {
-        runtimes.removeValue(forKey: id)
-        temporaryRuntimeIDs.removeAll { $0 == id }
-        bump()
     }
 
     func refresh() {
@@ -647,12 +546,8 @@ final class Supervisor: ObservableObject {
     // MARK: - Resolution helpers (shared by the API and the UI)
 
     func resolveServer(_ query: String) -> ServerRuntime? {
-        if let hit = store.config.resolveServer(query) { return runtimes[hit.server.id] }
-        if let runtime = temporaryRuntimes.first(where: { $0.id == query }) { return runtime }
-        let normalized = query.split(separator: "/", maxSplits: 1).last.map(String.init) ?? query
-        return temporaryRuntimes.first {
-            $0.config.name.caseInsensitiveCompare(normalized) == .orderedSame
-        }
+        guard let hit = store.config.resolveServer(query) else { return nil }
+        return runtimes[hit.server.id]
     }
 
     func resolveProject(_ query: String) -> Project? {
@@ -668,21 +563,6 @@ final class Supervisor: ObservableObject {
             if let server = project.servers.first(where: { $0.port == port && $0.id != serverID }) {
                 return (project, server)
             }
-        }
-        if let runtime = temporaryRuntimes.first(where: {
-            $0.id != serverID && $0.config.port == port
-        }) {
-            return (
-                Project(
-                    id: Supervisor.temporaryProjectID,
-                    name: "Temporary",
-                    icon: "clock.badge",
-                    color: Supervisor.temporaryProjectColor,
-                    root: runtime.workingDirectory,
-                    servers: [runtime.config]
-                ),
-                runtime.config
-            )
         }
         return nil
     }
@@ -716,10 +596,11 @@ final class Supervisor: ObservableObject {
         )
     }
 
-    /// The palette is intentionally the macOS system colors, so projects read as
-    /// native rather than branded. The order matters: colors are handed out in this
-    /// sequence, and every adjacent pair sits at least 86 degrees apart in OKLCH hue,
-    /// so the first projects you create never look alike in the charts.
+    /// The palette leads with the macOS system colors, so projects read as native
+    /// rather than branded, then continues with tones built in the same register.
+    /// The order matters: colors are handed out in this sequence, and every adjacent
+    /// pair sits far apart in OKLCH hue, so the first projects you create never look
+    /// alike in the charts.
     static let palette = [
         "#0A84FF", // Blue
         "#FF9F0A", // Orange
@@ -731,12 +612,21 @@ final class Supervisor: ObservableObject {
         "#5E5CE6", // Indigo
         "#66D4CF", // Mint
         "#8E8E93", // Gray
+        "#FF453A", // Red
+        "#9BE04A", // Lime
+        "#F45BD1", // Magenta
+        "#40C8E0", // Teal
+        "#FF7A5C", // Coral
+        "#9D7BFF", // Violet
+        "#2ED9A0", // Emerald
+        "#AC8E68", // Brown
+        "#7D8CA3", // Slate
+        "#FF8FA3", // Rose
     ]
     static let paletteNames = [
         "Blue", "Orange", "Purple", "Green", "Pink", "Cyan", "Yellow", "Indigo", "Mint", "Gray",
+        "Red", "Lime", "Magenta", "Teal", "Coral", "Violet", "Emerald", "Brown", "Slate", "Rose",
     ]
-    static let temporaryProjectID = "portly-temporary"
-    static let temporaryProjectColor = "#8E8E93"
 
     /// Hands out the first palette color no project uses yet, so two projects never
     /// end up with the same line in the resource charts. Once every color is taken,

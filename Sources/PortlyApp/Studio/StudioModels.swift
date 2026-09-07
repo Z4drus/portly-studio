@@ -258,6 +258,9 @@ struct StudioConfig: Codable {
     /// Respawn every session's shells at launch and resume their agents, so
     /// the app comes back exactly where it was.
     var reopenSessionsAtLaunch: Bool
+    /// Pre-approve a new project's folder in Claude Code, so its workspace trust
+    /// dialog never interrupts the first agent terminal opened there.
+    var trustNewProjectsInClaudeCode: Bool
     var sessions: [TerminalSession]
 
     static let defaultFontSize: Double = 13
@@ -274,6 +277,7 @@ struct StudioConfig: Codable {
         quickTerminalSize: CGSize = CGSize(width: 560, height: 360),
         envPanelSize: CGSize = CGSize(width: 760, height: 520),
         reopenSessionsAtLaunch: Bool = true,
+        trustNewProjectsInClaudeCode: Bool = true,
         sessions: [TerminalSession] = []
     ) {
         self.version = version
@@ -285,6 +289,7 @@ struct StudioConfig: Codable {
         self.quickTerminalSize = quickTerminalSize
         self.envPanelSize = envPanelSize
         self.reopenSessionsAtLaunch = reopenSessionsAtLaunch
+        self.trustNewProjectsInClaudeCode = trustNewProjectsInClaudeCode
         self.sessions = sessions
     }
 
@@ -299,6 +304,7 @@ struct StudioConfig: Codable {
         quickTerminalSize = try c.decodeIfPresent(CGSize.self, forKey: .quickTerminalSize) ?? CGSize(width: 560, height: 360)
         envPanelSize = try c.decodeIfPresent(CGSize.self, forKey: .envPanelSize) ?? CGSize(width: 760, height: 520)
         reopenSessionsAtLaunch = try c.decodeIfPresent(Bool.self, forKey: .reopenSessionsAtLaunch) ?? true
+        trustNewProjectsInClaudeCode = try c.decodeIfPresent(Bool.self, forKey: .trustNewProjectsInClaudeCode) ?? true
         sessions = try c.decodeIfPresent([TerminalSession].self, forKey: .sessions) ?? []
     }
 
@@ -373,7 +379,7 @@ enum ClaudeTranscripts {
             .appendingPathComponent("projects", isDirectory: true)
     }
 
-    /// `/Users/noe/Documents/app` becomes `-Users-noe-Documents-app`.
+    /// `/Users/me/Documents/app` becomes `-Users-me-Documents-app`.
     static func encodedDirectoryName(forProjectRoot root: String) -> String {
         let expanded = NSString(string: root).expandingTildeInPath
         return expanded.replacingOccurrences(of: "/", with: "-")

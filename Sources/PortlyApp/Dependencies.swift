@@ -97,8 +97,9 @@ enum DependencyInstallState: Equatable {
     var isInstalling: Bool { self == .installing }
 }
 
-/// Runs one install command in a PTY, streaming into the server's terminal.
-final class DependencyInstallProcess: NSObject, LocalProcessDelegate {
+/// Runs one command in a PTY beside a server, streaming into its terminal:
+/// a dependency install, or a configured maintenance action.
+final class TerminalSideProcess: NSObject, LocalProcessDelegate {
     private var process: LocalProcess?
     private let onOutput: (ArraySlice<UInt8>) -> Void
     private let onExit: (Int32?) -> Void

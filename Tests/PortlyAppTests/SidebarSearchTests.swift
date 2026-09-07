@@ -76,19 +76,11 @@ final class SidebarSearchTests: XCTestCase {
         XCTAssertTrue(SidebarSearch.filterProjects(catalog, query: "codeline").isEmpty)
     }
 
-    func testFirstMatchPrefersTemporaryJobsThenSidebarOrder() {
-        let temp = ServerConfig(id: "tmp_build", name: "preview", command: "pnpm preview", port: 4173)
-
-        XCTAssertEqual(
-            SidebarSearch.firstMatch(temporaryServers: [temp], projects: catalog, query: "preview"),
-            .server("tmp_build")
-        )
-        XCTAssertEqual(
-            SidebarSearch.firstMatch(temporaryServers: [temp], projects: catalog, query: "now"),
-            .server("srv_web")
-        )
-        XCTAssertNil(SidebarSearch.firstMatch(temporaryServers: [], projects: catalog, query: "missing"))
-        XCTAssertNil(SidebarSearch.firstMatch(temporaryServers: [temp], projects: catalog, query: "  "))
+    func testFirstMatchFollowsSidebarOrder() {
+        XCTAssertEqual(SidebarSearch.firstMatch(projects: catalog, query: "now"), .server("srv_web"))
+        XCTAssertEqual(SidebarSearch.firstMatch(projects: catalog, query: "redis"), .server("srv_redis"))
+        XCTAssertNil(SidebarSearch.firstMatch(projects: catalog, query: "missing"))
+        XCTAssertNil(SidebarSearch.firstMatch(projects: catalog, query: "  "))
     }
 
     func testSearchFieldLayoutsInAppKit() {

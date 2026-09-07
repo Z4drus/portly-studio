@@ -97,43 +97,10 @@ public enum PortlyAPI {
     public struct RunServerActionRequest: Codable {
         public var server: String
         public var action: String
-        public var timeoutSeconds: Int?
 
-        public init(server: String, action: String, timeoutSeconds: Int? = nil) {
+        public init(server: String, action: String) {
             self.server = server
             self.action = action
-            self.timeoutSeconds = timeoutSeconds
-        }
-    }
-
-    public struct RunTemporaryRequest: Codable {
-        public var name: String
-        public var command: String
-        public var directory: String
-        public var port: Int?
-        public var env: [String: String]?
-        public var healthURL: String?
-        public var healthStatus: Int?
-        public var timeoutSeconds: Int?
-
-        public init(
-            name: String,
-            command: String,
-            directory: String,
-            port: Int? = nil,
-            env: [String: String]? = nil,
-            healthURL: String? = nil,
-            healthStatus: Int? = nil,
-            timeoutSeconds: Int? = nil
-        ) {
-            self.name = name
-            self.command = command
-            self.directory = directory
-            self.port = port
-            self.env = env
-            self.healthURL = healthURL
-            self.healthStatus = healthStatus
-            self.timeoutSeconds = timeoutSeconds
         }
     }
 

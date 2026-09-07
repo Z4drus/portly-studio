@@ -17,14 +17,12 @@ final class ServerRuntime: NSObject, ObservableObject, LocalProcessDelegate, Ter
     @Published private(set) var lastExitCode: Int32?
     @Published private(set) var lastError: String?
     @Published private(set) var processMetrics: ProcessMetrics?
-    @Published private(set) var temporaryTimeoutSeconds: Int?
-    @Published private(set) var temporaryDeadline: Date?
-    @Published private(set) var temporaryFinishedAt: Date?
-    @Published private(set) var temporaryTimedOut = false
     /// Node projects only: whether `node_modules` is there. Nil means no
     /// `package.json`, so nothing to gate.
     @Published private(set) var dependencies: DependencyStatus?
     @Published private(set) var dependencyInstall: DependencyInstallState = .idle
+    /// The maintenance action running beside the server right now, if any.
+    @Published private(set) var runningAction: ServerAction?
     /// Set when the configured port was busy and the server started elsewhere.
     @Published private(set) var portFallback: PortFallback?
     /// Every TCP port the process tree listens on (Turbopack, Bun and friends
@@ -36,15 +34,16 @@ final class ServerRuntime: NSObject, ObservableObject, LocalProcessDelegate, Ter
     private(set) var projectID: String
     private(set) var projectName: String
     private(set) var projectRoot: String
-    /// Carried on the runtime because temporary projects never reach `config.json`,
-    /// so looking their color up in the project list always fails.
+    /// Kept beside the other project facts so the resource history never has
+    /// to look the project up again while a config change is being applied.
     private(set) var projectColorHex: String
 
     private var settings: PortlyConfig
     private let logs: LogStore
     private var process: LocalProcess?
     private var terminal: TerminalView?
-    private var installer: DependencyInstallProcess?
+    private var installer: TerminalSideProcess?
+    private var actionRunner: TerminalSideProcess?
     private var dependencyCheckInFlight = false
     private var listeningPortsInFlight = false
     /// Ports other configured servers own, so a fallback never collides with a
@@ -67,9 +66,6 @@ final class ServerRuntime: NSObject, ObservableObject, LocalProcessDelegate, Ter
     private var takeoverPending = false
     private var consecutiveHealthFailures = 0
     private var lastHealthyAt: Date?
-    private var temporaryStartedAt: Date?
-    private var temporaryStoppedByUser = false
-    private var timeoutWork: DispatchWorkItem?
 
     /// Called when a server lands in `.failed`, for the macOS notification.
     var onFailed: ((ServerRuntime) -> Void)?
@@ -141,7 +137,7 @@ final class ServerRuntime: NSObject, ObservableObject, LocalProcessDelegate, Ter
             directory: workingDirectory,
             state: state,
             pid: pid,
-            startedAt: startedAt ?? temporaryStartedAt,
+            startedAt: startedAt,
             restartCount: restartCount,
             lastExitCode: lastExitCode,
             lastError: lastError,
@@ -151,17 +147,10 @@ final class ServerRuntime: NSObject, ObservableObject, LocalProcessDelegate, Ter
             memoryBytes: processMetrics?.memoryBytes,
             residentMemoryBytes: processMetrics?.residentMemoryBytes,
             processCount: processMetrics?.processCount,
-            temporary: isTemporaryJob ? true : nil,
-            timeoutSeconds: temporaryTimeoutSeconds,
-            deadline: temporaryDeadline,
-            finishedAt: temporaryFinishedAt,
-            timedOut: isTemporaryJob ? temporaryTimedOut : nil,
             configuredPort: portFallback == nil ? nil : config.port,
             extraPorts: extraPorts.isEmpty ? nil : extraPorts
         )
     }
-
-    var isTemporaryJob: Bool { temporaryTimeoutSeconds != nil }
 
     /// False while packages are missing or being installed; the start buttons
     /// grey out rather than letting the command fail on a missing binary.
@@ -176,7 +165,7 @@ final class ServerRuntime: NSObject, ObservableObject, LocalProcessDelegate, Ter
 
     /// Cheap filesystem check, off the main thread; safe to call often.
     func refreshDependencies() {
-        guard !isTemporaryJob, !dependencyCheckInFlight else { return }
+        guard !dependencyCheckInFlight else { return }
         dependencyCheckInFlight = true
         let directory = workingDirectory
         let root = expand(projectRoot)
@@ -200,7 +189,7 @@ final class ServerRuntime: NSObject, ObservableObject, LocalProcessDelegate, Ter
         logs.note("installing dependencies: \(command) (cwd: \(dependencies.packageDirectory))")
         let view = terminalView()
         view.feed(text: "\u{1B}[2m[portly] \(command)\u{1B}[0m\r\n")
-        let install = DependencyInstallProcess(
+        let install = TerminalSideProcess(
             windowSize: { [weak self] in self?.getWindowSize() ?? winsize(ws_row: 30, ws_col: 100, ws_xpixel: 0, ws_ypixel: 0) },
             onOutput: { [weak self] slice in
                 self?.logs.append(bytes: slice)
@@ -226,40 +215,40 @@ final class ServerRuntime: NSObject, ObservableObject, LocalProcessDelegate, Ter
         installer?.terminate()
     }
 
-    var temporaryJobStatus: TemporaryJobStatus? {
-        guard let timeoutSeconds = temporaryTimeoutSeconds else { return nil }
-        let jobState: TemporaryJobState
-        if temporaryTimedOut {
-            jobState = .timedOut
-        } else if isRunning {
-            jobState = .running
-        } else if state == .failed || (lastExitCode.map { $0 != 0 } ?? false) {
-            jobState = .failed
-        } else if temporaryStoppedByUser {
-            jobState = .stopped
-        } else if lastExitCode == 0 {
-            jobState = .succeeded
-        } else {
-            jobState = .stopped
-        }
-        return TemporaryJobStatus(
-            id: id,
-            name: config.name,
-            command: config.command,
-            directory: workingDirectory,
-            state: jobState,
-            pid: pid,
-            startedAt: temporaryStartedAt,
-            finishedAt: temporaryFinishedAt,
-            timeoutSeconds: timeoutSeconds,
-            deadline: temporaryDeadline,
-            exitCode: lastExitCode,
-            error: lastError
-        )
-    }
+    // MARK: - Actions
 
-    func configureTemporaryJob(timeoutSeconds: Int) {
-        temporaryTimeoutSeconds = timeoutSeconds
+    /// Runs a maintenance action beside the server, in its working directory
+    /// and with its environment, streaming into the same terminal. The server
+    /// itself is never stopped or restarted. One action at a time: two commands
+    /// sharing a PTY would interleave their output past reading.
+    @discardableResult
+    func runAction(_ action: ServerAction) -> Bool {
+        guard actionRunner == nil, installer == nil else { return false }
+        let command = action.command
+        logs.note("action \(action.name): \(command)  (cwd: \(workingDirectory))")
+        let view = terminalView()
+        view.feed(text: "\u{1B}[2m[portly] action \(action.name): \(command)\u{1B}[0m\r\n")
+        runningAction = action
+        let runner = TerminalSideProcess(
+            windowSize: { [weak self] in self?.getWindowSize() ?? winsize(ws_row: 30, ws_col: 100, ws_xpixel: 0, ws_ypixel: 0) },
+            onOutput: { [weak self] slice in
+                self?.logs.append(bytes: slice)
+                DispatchQueue.main.async { self?.terminal?.feed(byteArray: slice) }
+            },
+            onExit: { [weak self] code in
+                guard let self else { return }
+                self.actionRunner = nil
+                self.runningAction = nil
+                let label = code.map(String.init) ?? "signal"
+                self.terminal?.feed(text: "\r\n\u{1B}[2m[portly] action \(action.name) exited (\(label))\u{1B}[0m\r\n")
+                self.logs.note("action \(action.name) exited (\(label))")
+                self.onStateChange?()
+            }
+        )
+        actionRunner = runner
+        runner.start(command: command, directory: workingDirectory, environment: environmentArray())
+        onStateChange?()
+        return true
     }
 
     func updateProcessMetrics(_ metrics: ProcessMetrics?) {
@@ -308,16 +297,6 @@ final class ServerRuntime: NSObject, ObservableObject, LocalProcessDelegate, Ter
         restartCount = 0
         lastHealthyAt = nil
         consecutiveHealthFailures = 0
-        if isTemporaryJob {
-            timeoutWork?.cancel()
-            timeoutWork = nil
-            temporaryStartedAt = nil
-            temporaryDeadline = nil
-            temporaryFinishedAt = nil
-            temporaryTimedOut = false
-            temporaryStoppedByUser = false
-            lastExitCode = nil
-        }
         spawn()
     }
 
@@ -342,14 +321,8 @@ final class ServerRuntime: NSObject, ObservableObject, LocalProcessDelegate, Ter
     }
 
     func stop(then completion: (() -> Void)? = nil) {
-        if isTemporaryJob, !temporaryTimedOut {
-            temporaryStoppedByUser = true
-        }
         guard let process, process.running, process.shellPid > 0 else {
             takeoverPending = false
-            if isTemporaryJob, temporaryFinishedAt == nil { temporaryFinishedAt = Date() }
-            timeoutWork?.cancel()
-            timeoutWork = nil
             setState(.stopped)
             completion?()
             return
@@ -436,12 +409,7 @@ final class ServerRuntime: NSObject, ObservableObject, LocalProcessDelegate, Ter
                 currentDirectory: dir
             )
             self.pid = proc.shellPid
-            let launchedAt = Date()
-            self.startedAt = launchedAt
-            if self.isTemporaryJob {
-                self.temporaryStartedAt = launchedAt
-                self.scheduleTemporaryTimeout()
-            }
+            self.startedAt = Date()
             self.startHealthTimer()
             self.onStateChange?()
         }
@@ -545,23 +513,6 @@ final class ServerRuntime: NSObject, ObservableObject, LocalProcessDelegate, Ter
         } else if !takeOverPort() {
             start()
         }
-    }
-
-    private func scheduleTemporaryTimeout() {
-        guard let seconds = temporaryTimeoutSeconds else { return }
-        timeoutWork?.cancel()
-        let deadline = Date().addingTimeInterval(TimeInterval(seconds))
-        temporaryDeadline = deadline
-        let work = DispatchWorkItem { [weak self] in
-            guard let self, self.isRunning else { return }
-            self.temporaryTimedOut = true
-            self.lastError = "Timed out after \(TemporaryTimeout.display(seconds))"
-            self.logs.note(self.lastError!)
-            self.terminal?.feed(text: "\r\n\u{1B}[31m[portly] \(self.lastError!)\u{1B}[0m\r\n")
-            self.stop()
-        }
-        timeoutWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + TimeInterval(seconds), execute: work)
     }
 
     /// Stop a listener launched outside Portly, then start this configured
@@ -740,9 +691,6 @@ final class ServerRuntime: NSObject, ObservableObject, LocalProcessDelegate, Ter
             pid = nil
             processMetrics = nil
             if new == .stopped { startedAt = nil }
-            if isTemporaryJob, new == .failed, temporaryFinishedAt == nil {
-                temporaryFinishedAt = Date()
-            }
         }
         onStateChange?()
     }
@@ -766,15 +714,12 @@ final class ServerRuntime: NSObject, ObservableObject, LocalProcessDelegate, Ter
             self.killWork?.cancel()
             self.killWork = nil
             self.stopHealthTimer()
-            self.timeoutWork?.cancel()
-            self.timeoutWork = nil
             let normalizedExitCode = Self.normalizedProcessExitCode(exitCode)
             self.lastExitCode = normalizedExitCode
             self.pid = nil
             self.healthy = false
             self.processMetrics = nil
             self.process = nil
-            if self.isTemporaryJob { self.temporaryFinishedAt = Date() }
 
             let code = normalizedExitCode.map(String.init) ?? "signal"
             self.logs.note("process exited (\(code))")
@@ -782,18 +727,10 @@ final class ServerRuntime: NSObject, ObservableObject, LocalProcessDelegate, Ter
 
             if self.manualStop {
                 self.manualStop = false
-                self.setState(self.temporaryTimedOut ? .failed : .stopped)
+                self.setState(.stopped)
                 let completion = self.pendingStopCompletion
                 self.pendingStopCompletion = nil
                 completion?()
-            } else if self.isTemporaryJob {
-                if normalizedExitCode == 0 {
-                    self.setState(.stopped)
-                } else {
-                    self.lastError = "Exited with code \(code)"
-                    self.setState(.failed)
-                    self.onFailed?(self)
-                }
             } else {
                 self.handleCrashRestart(reason: "exit \(code)")
             }
@@ -821,6 +758,12 @@ final class ServerRuntime: NSObject, ObservableObject, LocalProcessDelegate, Ter
     // MARK: - TerminalViewDelegate (keyboard goes back to the process)
 
     func send(source: TerminalView, data: ArraySlice<UInt8>) {
+        // Whatever is running beside the server owns the keyboard while it
+        // lasts, the same way a foreground command does in a shell.
+        if let actionRunner, actionRunner.isRunning {
+            actionRunner.send(data: data)
+            return
+        }
         if let installer, installer.isRunning {
             installer.send(data: data)
             return
@@ -830,6 +773,7 @@ final class ServerRuntime: NSObject, ObservableObject, LocalProcessDelegate, Ter
 
     func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
         installer?.resize(cols: newCols, rows: newRows)
+        actionRunner?.resize(cols: newCols, rows: newRows)
         guard let process, process.running, process.childfd >= 0 else { return }
         var size = winsize(
             ws_row: UInt16(newRows), ws_col: UInt16(newCols),

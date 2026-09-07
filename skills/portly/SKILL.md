@@ -1,6 +1,6 @@
 ---
 name: portly
-description: Manage persistent projects and temporary local processes with the Portly macOS app and CLI. Use when an agent needs to run, start, stop, restart, inspect logs or health, configure projects and ports, adopt external listeners, resolve port conflicts, or enable launch at login.
+description: Manage persistent projects and development servers with the Portly macOS app and CLI. Use when an agent needs to run, start, stop, restart, inspect logs or health, configure projects and ports, adopt external listeners, resolve port conflicts, or enable launch at login.
 ---
 
 # Portly
@@ -23,7 +23,7 @@ Whenever setting up Portly for a repository, ensure its root `AGENTS.md` tells a
 - Always use Portly (`portly ...`) to start, stop, restart, inspect, or keep local development servers running.
 - Start with `portly status`. Use `portly status --details` only for the full inventory and metrics, and `--json` only for machine-readable fields. Reuse a healthy managed server; if an in-scope server is running outside Portly, register it and use `portly take-over <project/server> --json`.
 - For long-lived or reusable work, create a project and server.
-- For builds, tests, code generation, previews, demos, and other bounded one-off work, run `job_id="$(portly temp '<command>' --path <folder> --timeout 30m)"`, then `portly wait "$job_id"`. `temp` returns immediately with an ID; `wait` prints captured logs and exits with the command's real code. A timeout kills the whole process group and exits with code `124`.
+- For builds, tests, code generation, and other bounded one-off work, run it directly in the foreground with a timeout; Portly only supervises servers.
 - Never launch persistent development servers directly, in the background, or through another supervisor.
 ```
 
@@ -34,9 +34,7 @@ The Portly installer also adds this rule, between `portly:managed-rule` markers,
 | Command | Purpose |
 | --- | --- |
 | `status`, `list`, `ls` | Compact active/problem view; add `--details` for the full inventory |
-| `temp`, `temporary`, `run-temp` | Run a short-lived process outside any project |
-| `wait` | Wait for a temporary job and return its real exit code |
-| `action` | Run a configured maintenance action without restarting the server |
+| `action` | Run a configured maintenance action beside the server, into its terminal and logs |
 | `memory-limit`, `ram-limit` | Show or configure automatic project restarts by footprint |
 | `start`, `stop`, `restart` | Control a server or every server in `--project` |
 | `logs` | Read captured output with `--tail` |
@@ -48,12 +46,10 @@ The Portly installer also adds this rule, between `portly:managed-rule` markers,
 
 Run `portly <command> --help` for exact flags. Use `--json` when structured fields are actually needed; `config` prints JSON or a path directly.
 
-## Choose project or temporary
+## Servers only
 
 - **Long-lived or reusable:** create or reuse a project, then add a named server. Projects persist across Portly launches and belong in the sidebar.
-- **Small or one-off:** run `id=$(portly temp '<command>' --name <name> --path <folder> --timeout 30m)`, then `portly wait "$id"`. `temp` returns immediately; Portly supervises the whole background process group, captures logs and resource use, and kills it at the timeout. Completed metadata remains available for one hour but is never written to `config.json` or restored after relaunch.
-
-Do not create a permanent project merely to host a build, test, quick preview, generated artifact, throwaway demo, or short verification server. A temporary job is still managed by Portly; never add shell backgrounding around it. Use `portly logs <id>` while it runs, `portly wait <id>` for its terminal result, and expect exit code `124` when its timeout is reached.
+- **Builds, tests, one-off commands:** not Portly's job. Run them directly in the foreground with a timeout, and never create a project merely to host a build, a test run, a throwaway demo, or a short verification server.
 
 ## Memory guard
 
@@ -81,15 +77,15 @@ Portly injects `PORT`, `PORTLY=1`, and `PORTLY_SERVER`. The configured port driv
 
 Use `start`, `stop`, or `restart` with a server, or `--project <project>`. `portly stop --all --json` stops everything. Use `update-server` to change fields, then restart a running server.
 
-For repeatable maintenance that must not restart the managed server, configure an action and run it as a supervised temporary job:
+For repeatable maintenance that must not restart the managed server, configure an action and run it beside the server:
 
 ```bash
 portly update-server <project/server> --action 'clear-cache=trash .next/cache'
-job_id="$(portly action <project/server> clear-cache)"
-portly wait "$job_id"
+portly action <project/server> clear-cache
+portly logs <project/server> --tail 50
 ```
 
-Actions inherit the server's working directory, environment, `PORT`, and original `PORTLY_SERVER`. Use an application endpoint or another framework-supported command for in-memory caches; removing a disk cache cannot clear state already held by the live process.
+`action` returns as soon as the command has started; its output streams into the server's terminal and logs, one action at a time per server. Actions inherit the server's working directory, environment, `PORT`, and `PORTLY_SERVER`. Use an application endpoint or another framework-supported command for in-memory caches; removing a disk cache cannot clear state already held by the live process.
 
 Inspect conflicts with `portly port <port> --json`. Use `portly kill-port <port> --json` only when the stop is requested or the occupant is confirmed in scope. Portly sends SIGTERM to regular processes and, for a Docker-published port, resolves and stops only the publishing container. It never auto-stops conflicts or signals Docker Desktop's global backend.
 
@@ -112,7 +108,3 @@ Removing a project stops its servers. Quitting stops every managed server becaus
 Use `portly forever enable --json` when Portly itself must launch at every macOS login. The command transfers currently active servers to the launchd-owned app. Verify both `portly forever status --json` and `portly status --json`; launchd state alone does not prove a managed server or its meaningful route works.
 
 Use `portly forever disable --json` to unload the LaunchAgent recoverably while keeping currently active servers under a regular Portly launch.
-
-## Linux
-
-On Linux, use the headless `portly` binary from this repository's `cli/` folder. It is the supervisor: commands auto-start a loopback daemon and speak the same API as macOS. Do not install `Portly.app`. `open` has no window and reports that. `forever` uses a systemd user unit, not launchd; it errors clearly when systemd is missing. Do not run the macOS app and the Linux daemon against the same `7737` port.

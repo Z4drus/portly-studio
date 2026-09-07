@@ -10,45 +10,11 @@ permissions:
 
 jobs:
   macos:
-    name: Build macOS app
+    name: Build and test
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
-      - name: Build Portly
+      - name: Build Portly Studio
         run: swift build -c release
-
-  linux-cli:
-    name: Build Linux CLI
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: cli
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.22"
-          cache-dependency-path: cli/go.sum
-      - run: go test ./...
-      - run: GOOS=linux GOARCH=amd64 go build -o /tmp/portly-linux-amd64 .
-      - run: GOOS=linux GOARCH=arm64 go build -o /tmp/portly-linux-arm64 .
-
-  website:
-    name: Build website
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: website
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 11.17.0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: website/pnpm-lock.yaml
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm typecheck
-      - run: pnpm build
+      - name: Run tests
+        run: swift test

@@ -23,7 +23,6 @@ struct MainView: View {
     @State private var editingProject: Project?
     @State private var editingServer: EditingServer?
     @State private var addingProject = false
-    @State private var runningTemporary = false
     @State private var search = ""
     @State private var doubleClickMonitor: Any?
     @State private var collapsedProjects: Set<String> = MainView.loadCollapsedProjects()
@@ -94,7 +93,6 @@ struct MainView: View {
             systemAccess.refresh()
         }
         .onChange(of: appSelection.pending) { applyPendingSelection() }
-        .onChange(of: supervisor.revision) { clearFinishedTemporarySelection() }
         .onChange(of: selection) {
             syncWorkspaceContext()
             rememberSelection()
@@ -116,19 +114,6 @@ struct MainView: View {
                     color: color
                 )
                 selection = .project(project.id)
-            }
-        }
-        .sheet(isPresented: $runningTemporary) {
-            TemporaryProcessForm { name, command, directory, port, healthURL, timeoutSeconds in
-                let runtime = supervisor.runTemporary(
-                    name: name,
-                    command: command,
-                    directory: directory,
-                    port: port,
-                    healthURL: healthURL,
-                    timeoutSeconds: timeoutSeconds
-                )
-                selection = .server(runtime.id)
             }
         }
         .sheet(item: $editingProject) { project in
@@ -171,19 +156,6 @@ struct MainView: View {
 
     private var sidebar: some View {
         List(selection: $selection) {
-            if !filteredTemporaryRuntimes.isEmpty {
-                Section {
-                    ForEach(filteredTemporaryRuntimes, id: \.id) { runtime in
-                        ServerRow(runtime: runtime)
-                            .tag(Selection.server(runtime.id))
-                            .contextMenu { temporaryServerMenu(runtime) }
-                    }
-                } header: {
-                    NucleoLabel("Temporary", icon: .timer)
-                        .help("Supervised background jobs currently running with a timeout")
-                }
-            }
-
             ForEach(filteredSidebarProjects) { project in
                 let sessions = workspace.sessions(for: project.id)
                 let childCount = project.servers.count + sessions.count
@@ -276,16 +248,8 @@ struct MainView: View {
         SidebarSearch.filterProjects(sidebarProjects, query: search)
     }
 
-    private var filteredTemporaryRuntimes: [ServerRuntime] {
-        supervisor.visibleTemporaryRuntimes.filter {
-            SidebarSearch.matchesServer($0.config, query: search)
-        }
-    }
-
     private var showEmptySearch: Bool {
-        SidebarSearch.isActive(search)
-            && filteredTemporaryRuntimes.isEmpty
-            && filteredSidebarProjects.isEmpty
+        SidebarSearch.isActive(search) && filteredSidebarProjects.isEmpty
     }
 
     /// Search returns truncated `Project` copies. Mutations and "open" must use
@@ -295,11 +259,7 @@ struct MainView: View {
     }
 
     private func activateFirstMatch() {
-        switch SidebarSearch.firstMatch(
-            temporaryServers: supervisor.visibleTemporaryRuntimes.map(\.config),
-            projects: sidebarProjects,
-            query: search
-        ) {
+        switch SidebarSearch.firstMatch(projects: sidebarProjects, query: search) {
         case .server(let id):
             selection = .server(id)
         case .project(let id):
@@ -335,6 +295,8 @@ struct MainView: View {
 
     private var sidebarActions: some View {
         VStack(spacing: 6) {
+            UsageSidebarSection()
+
             sidebarDestinationButton(
                 title: "Resources",
                 icon: .chartLine,
@@ -348,17 +310,6 @@ struct MainView: View {
                 selection: .ports,
                 hint: "Shows every listening TCP port on this Mac"
             )
-
-            Button {
-                runningTemporary = true
-            } label: {
-                NucleoLabel("Run Temporary…", icon: .timer)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.large)
-            .accessibilityLabel("Run temporary process")
-            .accessibilityHint("For small previews and one-off work that should not create a permanent project")
 
             Button {
                 addingProject = true
@@ -570,28 +521,6 @@ struct MainView: View {
         Button("Remove Server") { supervisor.removeServer(id: runtime.id) }
     }
 
-    @ViewBuilder
-    private func temporaryServerMenu(_ runtime: ServerRuntime) -> some View {
-        if runtime.isRunning {
-            Button("Stop and Remove") { supervisor.removeServer(id: runtime.id) }
-            Button("Restart") { runtime.restart() }
-        } else if runtime.state == .failed {
-            Button("Retry") { runtime.start() }
-            Divider()
-            Button("Remove") { supervisor.removeServer(id: runtime.id) }
-        } else {
-            Button("Run Again") { runtime.start() }
-            Divider()
-            Button("Remove") { supervisor.removeServer(id: runtime.id) }
-        }
-        if let url = runtime.url {
-            Divider()
-            Button("Open \(url)") {
-                if let link = URL(string: url) { NSWorkspace.shared.open(link) }
-            }
-        }
-    }
-
     // MARK: - Detail
 
     @ViewBuilder
@@ -603,19 +532,16 @@ struct MainView: View {
             PortsView()
         case .server(let id):
             if let runtime = supervisor.runtime(for: id) {
-                ServerDetail(
-                    runtime: runtime,
-                    onEdit: supervisor.temporaryRuntimeIDs.contains(id) ? nil : {
-                        if let project = supervisor.project(containing: id) {
-                            editingServer = EditingServer(
-                                projectID: project.id,
-                                projectName: project.name,
-                                projectRoot: project.root,
-                                server: runtime.config
-                            )
-                        }
+                ServerDetail(runtime: runtime) {
+                    if let project = supervisor.project(containing: id) {
+                        editingServer = EditingServer(
+                            projectID: project.id,
+                            projectName: project.name,
+                            projectRoot: project.root,
+                            server: runtime.config
+                        )
                     }
-                )
+                }
             } else {
                 emptyDetail("This server no longer exists.")
             }
@@ -638,8 +564,8 @@ struct MainView: View {
                 emptyDetail("This project no longer exists.")
             }
         case nil:
-            emptyDetail(supervisor.projects.isEmpty && supervisor.visibleTemporaryRuntimes.isEmpty
-                ? "Run a temporary process or add a project to get started."
+            emptyDetail(supervisor.projects.isEmpty
+                ? "Add a project to get started."
                 : "Select a server, or open a coding session on a project.")
         }
     }
@@ -652,13 +578,6 @@ struct MainView: View {
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private func clearFinishedTemporarySelection() {
-        guard case .server(let id) = selection,
-              supervisor.temporaryRuntimeIDs.contains(id),
-              supervisor.runtime(for: id)?.isRunning == false else { return }
-        selection = nil
     }
 
     private func applyPendingSelection() {
@@ -778,8 +697,10 @@ private struct ServerRow: View {
                         Text(":\(String(port))")
                             .help("Also listening on port \(port)")
                     }
-                    if let job = runtime.temporaryJobStatus {
-                        Text(jobLabel(job))
+                    if let action = runtime.runningAction {
+                        Text(action.name)
+                            .foregroundStyle(Color.accentColor)
+                            .help("Running the \(action.name) action beside the server")
                     }
                     if let metrics = runtime.processMetrics {
                         Spacer(minLength: 4)
@@ -810,16 +731,6 @@ private struct ServerRow: View {
 
     private func memoryText(_ metrics: ProcessMetrics) -> String {
         ByteCountFormatter.string(fromByteCount: Int64(metrics.memoryBytes), countStyle: .memory)
-    }
-
-    private func jobLabel(_ job: TemporaryJobStatus) -> String {
-        switch job.state {
-        case .running: return "timeout \(TemporaryTimeout.display(job.timeoutSeconds))"
-        case .succeeded: return "succeeded"
-        case .failed: return job.exitCode.map { "failed (exit \($0))" } ?? "failed"
-        case .timedOut: return "timed out"
-        case .stopped: return "stopped"
-        }
     }
 }
 

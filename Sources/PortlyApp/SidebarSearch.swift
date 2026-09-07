@@ -28,30 +28,8 @@ enum SidebarSearch {
         }
     }
 
-    static func matchesServer(
-        _ server: ServerConfig,
-        query: String,
-        project: Project? = nil
-    ) -> Bool {
-        let needle = normalized(query)
-        guard !needle.isEmpty else { return true }
-        if let project, projectMatches(project, needle: needle) {
-            return true
-        }
-        return serverMatches(server, needle: needle)
-    }
-
-    static func firstMatch(
-        temporaryServers: [ServerConfig],
-        projects: [Project],
-        query: String
-    ) -> SidebarSearchMatch? {
+    static func firstMatch(projects: [Project], query: String) -> SidebarSearchMatch? {
         guard isActive(query) else { return nil }
-        let temps = temporaryServers.filter { matchesServer($0, query: query) }
-        if let server = temps.first {
-            return .server(server.id)
-        }
-
         let filtered = filterProjects(projects, query: query)
         guard let project = filtered.first else { return nil }
         if let server = project.servers.first {

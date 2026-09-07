@@ -100,11 +100,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         server.start()
         control = server
         Supervisor.shared.resumeAfterUpdaterRelaunchIfNeeded()
+        // The AI usage rings: the notch on the screen edge and the sidebar
+        // section read from the same store.
+        UsageCenter.shared.start()
         // Private fork: no launch telemetry is sent anywhere.
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         // The app is the supervisor: quitting takes every server down with it.
+        UsageCenter.shared.stop()
         KeepAwake.shared.shutdown()
         StudioWorkspace.shared.terminateEverything()
         Supervisor.shared.terminateEverythingSynchronously()

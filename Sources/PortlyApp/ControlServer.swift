@@ -112,14 +112,6 @@ final class ControlServer {
                 }
                 return (200, try ok(PortlyAPI.LogsResponse(server: runtime.config.name, lines: runtime.logTail(tail))))
 
-            case ("GET", "/temporary/status"):
-                let id = request.query["id"] ?? ""
-                guard supervisor.temporaryRuntimeIDs.contains(id),
-                      let job = supervisor.runtime(for: id)?.temporaryJobStatus else {
-                    return (404, try fail("No temporary job matching '\(id)'"))
-                }
-                return (200, try ok(job))
-
             case ("POST", "/projects/add"):
                 let body: PortlyAPI.AddProjectRequest = try request.decode()
                 let root = NSString(string: body.root).expandingTildeInPath
@@ -184,53 +176,9 @@ final class ControlServer {
                 if body.start == true { supervisor.start(serverID: server.id) }
                 return (200, try ok(server))
 
-            case ("POST", "/temporary/run"):
-                let body: PortlyAPI.RunTemporaryRequest = try request.decode()
-                let name = body.name.trimmingCharacters(in: .whitespacesAndNewlines)
-                let command = body.command.trimmingCharacters(in: .whitespacesAndNewlines)
-                let directory = NSString(string: body.directory).expandingTildeInPath
-                let timeoutSeconds = body.timeoutSeconds ?? TemporaryTimeout.defaultSeconds
-                guard !name.isEmpty else { return (400, try fail("Temporary process name cannot be empty")) }
-                guard !command.isEmpty else { return (400, try fail("Temporary command cannot be empty")) }
-                guard (1...TemporaryTimeout.maximumSeconds).contains(timeoutSeconds) else {
-                    return (400, try fail("Timeout must be between 1 second and 7 days"))
-                }
-                var isDirectory: ObjCBool = false
-                guard FileManager.default.fileExists(atPath: directory, isDirectory: &isDirectory), isDirectory.boolValue else {
-                    return (400, try fail("Directory does not exist: \(directory)"))
-                }
-                if let port = body.port {
-                    if let conflict = supervisor.server(configuredOn: port) {
-                        let next = supervisor.nextAvailablePort(startingAt: port + 1)
-                        return (400, try fail(
-                            "Port \(port) is configured for \(conflict.project.name)/\(conflict.server.name). Try \(next)."
-                        ))
-                    }
-                    if let occupant = supervisor.occupant(of: port) {
-                        return (400, try fail(
-                            "Port \(port) is already used by \(occupant.command) (pid \(occupant.pid))"
-                        ))
-                    }
-                }
-                let runtime = supervisor.runTemporary(
-                    name: name,
-                    command: command,
-                    directory: directory,
-                    port: body.port,
-                    env: body.env ?? [:],
-                    healthURL: body.healthURL,
-                    healthStatus: body.healthStatus,
-                    timeoutSeconds: timeoutSeconds
-                )
-                guard let job = runtime.temporaryJobStatus else {
-                    return (500, try fail("Temporary job metadata was not created"))
-                }
-                return (200, try ok(job))
-
             case ("POST", "/actions/run"):
                 let body: PortlyAPI.RunServerActionRequest = try request.decode()
-                guard let runtime = supervisor.resolveServer(body.server),
-                      !supervisor.temporaryRuntimeIDs.contains(runtime.id) else {
+                guard let runtime = supervisor.resolveServer(body.server) else {
                     return (404, try fail("No configured server matching '\(body.server)'"))
                 }
                 guard let action = runtime.config.actions.first(where: {
@@ -238,15 +186,13 @@ final class ControlServer {
                 }) else {
                     return (404, try fail("No action named '\(body.action)' on \(runtime.projectName)/\(runtime.config.name)"))
                 }
-                let timeoutSeconds = body.timeoutSeconds ?? TemporaryTimeout.defaultSeconds
-                guard (1...TemporaryTimeout.maximumSeconds).contains(timeoutSeconds) else {
-                    return (400, try fail("Timeout must be between 1 second and 7 days"))
+                guard supervisor.runAction(action, for: runtime) else {
+                    return (409, try fail("Another command is already running beside \(runtime.config.name); wait for it to finish"))
                 }
-                let actionRuntime = supervisor.runAction(action, for: runtime, timeoutSeconds: timeoutSeconds)
-                guard let job = actionRuntime.temporaryJobStatus else {
-                    return (500, try fail("Action job metadata was not created"))
-                }
-                return (200, try ok(job))
+                return (200, try ok(PortlyAPI.ActionResponse(
+                    affected: [runtime.id],
+                    message: "Running \(action.name) beside \(runtime.projectName)/\(runtime.config.name); its output goes to that server's terminal and logs"
+                )))
 
             case ("POST", "/memory-limit"):
                 let body: PortlyAPI.UpdateMemoryLimitRequest = try request.decode()

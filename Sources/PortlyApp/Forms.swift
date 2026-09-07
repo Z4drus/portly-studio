@@ -94,6 +94,13 @@ private struct IconColorPicker: View {
         Set(takenColors.map { $0.uppercased() }).subtracting([color.uppercased()])
     }
 
+    /// An 18 pt swatch inside 4 pt of padding measures 26 pt; ten of them stay well
+    /// inside the 520 pt sheet next to the icon preview.
+    private static let swatchColumns = Array(
+        repeating: GridItem(.fixed(26), spacing: 2, alignment: .center),
+        count: 10
+    )
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .center, spacing: 14) {
@@ -114,7 +121,9 @@ private struct IconColorPicker: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
-                    HStack(spacing: 7) {
+                    // Twenty swatches never fit on one line inside the sheet, so
+                    // they wrap into two even rows of ten.
+                    LazyVGrid(columns: Self.swatchColumns, alignment: .leading, spacing: 2) {
                         ForEach(Array(Supervisor.palette.enumerated()), id: \.element) { index, hex in
                             let name = Supervisor.paletteNames[index]
                             let isTaken = taken.contains(hex.uppercased())
@@ -517,113 +526,4 @@ private struct SuggestionRow: View {
         .buttonStyle(.plain)
         .accessibilityValue(isSelected ? "Selected" : "")
     }
-}
-
-/// Launches an ephemeral process without adding permanent project or server
-/// configuration. It intentionally asks for only the fields useful to a small
-/// preview or one-off task.
-struct TemporaryProcessForm: View {
-    let onRun: (String, String, String, Int?, String?, Int) -> Void
-
-    @Environment(\.dismiss) private var dismiss
-    @State private var name = "Temporary process"
-    @State private var command = ""
-    @State private var directory = FileManager.default.homeDirectoryForCurrentUser.path
-    @State private var portText = ""
-    @State private var healthURL = ""
-    @State private var timeoutText = "30m"
-
-    var body: some View {
-        VStack(spacing: 0) {
-            Form {
-                Section {
-                    Label {
-                        Text("Temporary jobs run in the background, stop their full process group at the timeout, and keep their result for one hour.")
-                    } icon: {
-                        NucleoIconView(.timer, size: 14)
-                            .foregroundStyle(Color.accentColor)
-                    }
-                    .font(PortlyTypography.body)
-
-                    Text("For long-lived or reusable work, create a project instead.")
-                        .font(PortlyTypography.metadata)
-                        .foregroundStyle(.secondary)
-                }
-
-                Section("Process") {
-                    TextField("Name", text: $name)
-                    TextField("Command", text: $command, axis: .vertical)
-                        .font(.system(size: 12, design: .monospaced))
-                        .lineLimit(2...5)
-
-                    HStack {
-                        TextField("Working directory", text: $directory)
-                            .font(.system(size: 12, design: .monospaced))
-                        Button("Choose…", action: chooseDirectory)
-                    }
-                }
-
-                Section("Monitoring") {
-                    TextField("Timeout (for example 30s, 10m, 2h)", text: $timeoutText)
-                        .textFieldStyle(.roundedBorder)
-                    TextField("Port", text: $portText)
-                        .textFieldStyle(.roundedBorder)
-                    TextField("Health path or URL", text: $healthURL)
-                        .textFieldStyle(.roundedBorder)
-                }
-            }
-            .formStyle(.grouped)
-
-            Divider()
-
-            HStack {
-                Spacer()
-                Button("Cancel") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Button("Run Temporary") {
-                    if let timeoutSeconds = TemporaryTimeout.parse(timeoutText) {
-                        onRun(
-                            name.trimmingCharacters(in: .whitespacesAndNewlines),
-                            command.trimmingCharacters(in: .whitespacesAndNewlines),
-                            NSString(string: directory).expandingTildeInPath,
-                            Int(portText.trimmingCharacters(in: .whitespacesAndNewlines)),
-                            healthURL.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
-                            timeoutSeconds
-                        )
-                    }
-                    dismiss()
-                }
-                .buttonStyle(.borderedProminent)
-                .keyboardShortcut(.defaultAction)
-                .disabled(!canRun)
-            }
-            .padding(14)
-        }
-        .frame(width: 540)
-    }
-
-    private var canRun: Bool {
-        let resolvedDirectory = NSString(string: directory).expandingTildeInPath
-        var isDirectory: ObjCBool = false
-        return !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && FileManager.default.fileExists(atPath: resolvedDirectory, isDirectory: &isDirectory)
-            && isDirectory.boolValue
-            && TemporaryTimeout.parse(timeoutText) != nil
-            && (portText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || Int(portText) != nil)
-    }
-
-    private func chooseDirectory() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        panel.directoryURL = URL(fileURLWithPath: NSString(string: directory).expandingTildeInPath)
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        directory = url.path
-    }
-}
-
-private extension String {
-    var nilIfEmpty: String? { isEmpty ? nil : self }
 }

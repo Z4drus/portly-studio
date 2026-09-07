@@ -9,7 +9,6 @@ Describe the problem this pull request solves.
 ## Verification
 
 - [ ] `swift build -c release`
-- [ ] `pnpm --dir website install --frozen-lockfile`
-- [ ] `pnpm --dir website build`
+- [ ] `swift test`
 - [ ] User-facing copy is in English
 - [ ] No secrets or private paths are included
