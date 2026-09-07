@@ -42,6 +42,22 @@ final class ResourceDashboardTests: XCTestCase {
         host.layoutSubtreeIfNeeded()
     }
 
+    /// The picker reads names by index, so a shorter name list would trap at runtime.
+    func testEveryPaletteColorHasAName() {
+        XCTAssertEqual(Supervisor.palette.count, Supervisor.paletteNames.count)
+        XCTAssertEqual(Set(Supervisor.paletteNames).count, Supervisor.paletteNames.count)
+    }
+
+    func testPaletteColorsAreDistinctSixDigitHexes() {
+        for hex in Supervisor.palette {
+            XCTAssertEqual(hex.count, 7, hex)
+            XCTAssertTrue(hex.hasPrefix("#"), hex)
+            XCTAssertNotNil(Int(hex.dropFirst(), radix: 16), hex)
+            XCTAssertEqual(hex, hex.uppercased(), hex)
+        }
+        XCTAssertEqual(Set(Supervisor.palette).count, Supervisor.palette.count)
+    }
+
     func testNextColorSkipsColorsAlreadyTaken() {
         let taken = Array(Supervisor.palette.prefix(3))
 
