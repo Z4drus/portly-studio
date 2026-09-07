@@ -22,6 +22,18 @@ FOREVER=0
 RELEASE=0
 RUNNING_SERVERS=()
 
+# `pgrep -x Portly` misses the app whenever the caller runs with a restricted
+# view of the process table, and trashing a live bundle from under a running app
+# is exactly the failure that detection is there to prevent. The control port is
+# the reliable signal: only a running Portly listens on it.
+portly_pid() {
+  lsof -nP -iTCP:7737 -sTCP:LISTEN -t 2>/dev/null | head -1
+}
+
+portly_is_running() {
+  pgrep -x Portly >/dev/null 2>&1 || [ -n "$(portly_pid)" ]
+}
+
 # `trash` is a personal convenience, not a dependency: anyone who clones the
 # repository should be able to build without installing it.
 discard() {
@@ -172,7 +184,7 @@ fi
 
 if [ "$INSTALL" -eq 1 ]; then
   echo "==> Installing"
-  if pgrep -x Portly >/dev/null 2>&1; then
+  if portly_is_running; then
     if command -v portly >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
       while IFS= read -r server_id; do
         [ -n "$server_id" ] && RUNNING_SERVERS+=("$server_id")
@@ -184,11 +196,11 @@ if [ "$INSTALL" -eq 1 ]; then
     fi
     osascript -e 'quit app "Portly Custom"' >/dev/null 2>&1 || true
     osascript -e 'quit app "Portly"' >/dev/null 2>&1 || true
-    for _ in {1..20}; do
-      pgrep -x Portly >/dev/null 2>&1 || break
+    for _ in {1..40}; do
+      portly_is_running || break
       sleep 0.25
     done
-    if pgrep -x Portly >/dev/null 2>&1; then
+    if portly_is_running; then
       echo "    Portly did not quit; close its open sheet and run the installer again" >&2
       exit 1
     fi
