@@ -89,6 +89,35 @@ enum TerminalStyling {
     }
 }
 
+/// How the Option key behaves in every terminal Portly draws.
+///
+/// SwiftTerm defaults to Option-as-Meta, which sends `ESC` plus the bare key and
+/// drops the character the layout would have produced. On a US layout nobody
+/// notices; on Swiss, German, French and most other ISO layouts it makes
+/// `{ } [ ] @ | ~ #` and the backslash impossible to type. So Option composes
+/// characters, as it does everywhere else on the Mac, and stays Meta only for
+/// the keys that produce no character: ⌥← and ⌥⌫ still move and delete by word.
+enum TerminalOptionKey {
+    /// Arrows and the editing keys, by virtual key code.
+    static let metaKeyCodes: Set<UInt16> = [
+        123, 124, 125, 126, // arrows
+        51, 117,            // backspace, forward delete
+        36, 76, 48, 53,     // return, enter, tab, escape
+        115, 119, 116, 121, // home, end, page up, page down
+    ]
+
+    static func actsAsMeta(keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> Bool {
+        modifiers.contains(.option) && metaKeyCodes.contains(keyCode)
+    }
+
+    /// SwiftTerm keeps `keyDown` closed to subclasses, so the mode is set from
+    /// the app's key monitor just before the event reaches the view.
+    static func prepare(_ view: TerminalView, for event: NSEvent) {
+        let wanted = actsAsMeta(keyCode: event.keyCode, modifiers: event.modifierFlags)
+        if view.optionAsMetaKey != wanted { view.optionAsMetaKey = wanted }
+    }
+}
+
 /// `TerminalView` that tells its owner when it gains keyboard focus. SwiftTerm
 /// does not open its responder overrides, so focus is read off the window.
 final class StudioTerminalView: TerminalView {
@@ -130,10 +159,12 @@ final class TerminalPaneRuntime: NSObject, ObservableObject, LocalProcessDelegat
     @Published private(set) var isRunning = false
     @Published private(set) var exitCode: Int32?
     @Published private(set) var hasFocus = false
-    /// Bumped whenever output arrives, so "activity" indicators can animate.
-    @Published private(set) var lastOutputAt: Date?
     /// Timestamps of the last output chunks. A working agent streams dozens
     /// per second; an idle one refreshes a status line now and then.
+    ///
+    /// Deliberately not `@Published`: output arrives dozens of times a second,
+    /// and publishing each chunk redrew the pane chrome at that rate. Activity
+    /// is read from here once a second by `StudioWorkspace`.
     private var recentOutput: [Date] = []
     private static let recentOutputCapacity = 24
     private static let workingChunkThreshold = 4
@@ -181,11 +212,12 @@ final class TerminalPaneRuntime: NSObject, ObservableObject, LocalProcessDelegat
     func terminalView() -> StudioTerminalView {
         if let view { return view }
         let created = StudioTerminalView(frame: CGRect(x: 0, y: 0, width: 800, height: 480))
+        created.optionAsMetaKey = false
         created.terminalDelegate = self
         TerminalStyling.apply(to: created, fontSize: fontSize)
         created.onFocus = { [weak self] in
             guard let self else { return }
-            self.hasFocus = true
+            if !self.hasFocus { self.hasFocus = true }
             self.onFocus?(self)
         }
         created.onCloseShortcut = { [weak self] in
@@ -213,7 +245,7 @@ final class TerminalPaneRuntime: NSObject, ObservableObject, LocalProcessDelegat
     }
 
     func markUnfocused() {
-        hasFocus = false
+        if hasFocus { hasFocus = false }
     }
 
     func muteActivity(for seconds: TimeInterval) {
@@ -340,9 +372,7 @@ final class TerminalPaneRuntime: NSObject, ObservableObject, LocalProcessDelegat
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.view?.feed(byteArray: slice)
-            let now = Date()
-            self.lastOutputAt = now
-            self.recentOutput.append(now)
+            self.recentOutput.append(Date())
             if self.recentOutput.count > Self.recentOutputCapacity {
                 self.recentOutput.removeFirst(self.recentOutput.count - Self.recentOutputCapacity)
             }
@@ -392,16 +422,13 @@ final class TerminalPaneRuntime: NSObject, ObservableObject, LocalProcessDelegat
     }
 
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {
-        guard let directory else {
-            currentDirectory = nil
-            return
+        // OSC 7 sends a file URL; keep a plain path for the chrome. Shells
+        // report the directory on every prompt, so only a real move publishes.
+        var next = directory
+        if let directory, let url = URL(string: directory), url.isFileURL {
+            next = url.path
         }
-        // OSC 7 sends a file URL; keep a plain path for the chrome.
-        if let url = URL(string: directory), url.isFileURL {
-            currentDirectory = url.path
-        } else {
-            currentDirectory = directory
-        }
+        if next != currentDirectory { currentDirectory = next }
     }
 
     func scrolled(source: TerminalView, position: Double) {}

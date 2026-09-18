@@ -252,6 +252,9 @@ final class ServerRuntime: NSObject, ObservableObject, LocalProcessDelegate, Ter
     }
 
     func updateProcessMetrics(_ metrics: ProcessMetrics?) {
+        // A stopped server is sampled as nil every two seconds; assigning an
+        // unchanged `@Published` value would still redraw every row observing it.
+        guard metrics != processMetrics else { return }
         processMetrics = metrics
     }
 
@@ -267,6 +270,7 @@ final class ServerRuntime: NSObject, ObservableObject, LocalProcessDelegate, Ter
         if let terminal { return terminal }
         let view = TerminalView(frame: CGRect(x: 0, y: 0, width: 800, height: 480))
         view.terminalDelegate = self
+        view.optionAsMetaKey = false
         TerminalStyling.apply(to: view, fontSize: 13)
         terminal = view
         return view
@@ -615,9 +619,16 @@ final class ServerRuntime: NSObject, ObservableObject, LocalProcessDelegate, Ter
         }
     }
 
+    /// Publishes only what changed. A healthy server answers the same thing
+    /// every few seconds for hours; announcing each answer redrew the whole
+    /// window once per running server per interval. `setState` reports the
+    /// transitions that matter.
     private func handleHealthResult(_ ok: Bool) {
         guard isRunning else { return }
-        healthy = ok
+        if healthy != ok {
+            healthy = ok
+            onStateChange?()
+        }
 
         if ok {
             consecutiveHealthFailures = 0
@@ -626,15 +637,11 @@ final class ServerRuntime: NSObject, ObservableObject, LocalProcessDelegate, Ter
                 setState(.running)
                 refreshListeningPorts()
             }
-            onStateChange?()
             return
         }
 
         // Grace period: a starting server has not bound its port yet.
-        if state == .starting {
-            onStateChange?()
-            return
-        }
+        if state == .starting { return }
 
         consecutiveHealthFailures += 1
         if state == .running { setState(.unhealthy) }
@@ -644,7 +651,6 @@ final class ServerRuntime: NSObject, ObservableObject, LocalProcessDelegate, Ter
             consecutiveHealthFailures = 0
             stop(then: { [weak self] in self?.handleCrashRestart(reason: "unhealthy") })
         }
-        onStateChange?()
     }
 
     // MARK: - Restart policy

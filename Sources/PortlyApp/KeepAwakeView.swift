@@ -3,10 +3,12 @@ import SwiftUI
 /// The always-there toolbar control. One click toggles; the chevron opens the
 /// options. State lives in `KeepAwake`, never in the toolbar item, because
 /// SwiftUI rebuilds toolbar items freely and would drop it.
+///
+/// Nothing in here animates on its own. A `repeatForever` pulse inside a
+/// toolbar item re-laid out the whole toolbar on every frame, and on macOS 27
+/// the glass behind the items visibly flickered with it.
 struct KeepAwakeToolbarButton: View {
     @ObservedObject private var keepAwake = KeepAwake.shared
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var breathing = false
 
     private let idleChoices = [2, 5, 10, 15, 30, 60]
 
@@ -59,8 +61,6 @@ struct KeepAwakeToolbarButton: View {
         .accessibilityValue(keepAwake.isActive ? "On" : "Off")
         .animation(Motion.state, value: keepAwake.isActive)
         .animation(Motion.state, value: keepAwake.workingCount > 0)
-        .onAppear { syncBreathing() }
-        .onChange(of: keepAwake.isActive) { syncBreathing() }
     }
 
     private var pill: some View {
@@ -70,8 +70,6 @@ struct KeepAwakeToolbarButton: View {
                     Circle()
                         .fill(Color.accentColor.opacity(0.22))
                         .frame(width: 22, height: 22)
-                        .scaleEffect(breathing && !reduceMotion ? 1.25 : 1)
-                        .opacity(breathing ? 0.45 : 1)
                         .transition(.opacity)
                 }
                 NucleoIconView(.coffee, size: 15)
@@ -110,7 +108,8 @@ struct KeepAwakeToolbarButton: View {
         switch keepAwake.workingCount {
         case 0:
             if keepAwake.isActive {
-                let seconds = max(0, keepAwake.idleMinutes * 60 - keepAwake.idleSeconds)
+                let idle = keepAwake.idleSince.map { Int(Date().timeIntervalSince($0)) } ?? 0
+                let seconds = max(0, keepAwake.idleMinutes * 60 - idle)
                 return "No agent working · sleep allowed in \(seconds >= 60 ? "\(seconds / 60) min" : "\(seconds) s")"
             }
             return "No agent working"
@@ -123,13 +122,5 @@ struct KeepAwakeToolbarButton: View {
         if !keepAwake.blockLidSleep { return "Lid closed: the Mac sleeps" }
         if keepAwake.lidSleepBlocked { return "Lid closed: stays awake" }
         return keepAwake.isActive ? "Lid protection not granted" : "Lid protection applied when turned on"
-    }
-
-    private func syncBreathing() {
-        if keepAwake.isActive {
-            withAnimation(Motion.pulse) { breathing = true }
-        } else {
-            withAnimation(Motion.state) { breathing = false }
-        }
     }
 }

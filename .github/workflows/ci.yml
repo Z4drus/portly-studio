@@ -15,6 +15,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build Portly Studio
-        run: swift build -c release
+        run: swift build -c release --build-system native
       - name: Run tests
-        run: swift test
+        run: swift test --build-system native

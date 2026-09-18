@@ -57,18 +57,29 @@ done
 
 echo "==> Building (release)"
 cd "$ROOT"
+
+# Newer toolchains default to the Swift Build engine, which compiles SwiftTerm's
+# Metal shaders and so fails outright on a Mac without the separately downloaded
+# Metal Toolchain. The native engine ships the shader source as a resource and
+# SwiftTerm compiles it on first use, which is all Portly needs. Asked for by
+# name wherever the option exists, so every Mac builds the same way.
+SWIFT_BUILD=(swift build -c release)
+if swift build --help 2>/dev/null | grep -q -- '--build-system'; then
+  SWIFT_BUILD+=(--build-system native)
+fi
+
 if [ "$RELEASE" -eq 1 ]; then
-  swift build -c release --triple arm64-apple-macosx14.0 --product PortlyApp
-  swift build -c release --triple x86_64-apple-macosx14.0 --product PortlyApp
-  swift build -c release --triple arm64-apple-macosx14.0 --product portly
-  swift build -c release --triple x86_64-apple-macosx14.0 --product portly
-  ARM64_BIN_DIR="$(swift build -c release --triple arm64-apple-macosx14.0 --show-bin-path)"
-  X86_64_BIN_DIR="$(swift build -c release --triple x86_64-apple-macosx14.0 --show-bin-path)"
+  "${SWIFT_BUILD[@]}" --triple arm64-apple-macosx14.0 --product PortlyApp
+  "${SWIFT_BUILD[@]}" --triple x86_64-apple-macosx14.0 --product PortlyApp
+  "${SWIFT_BUILD[@]}" --triple arm64-apple-macosx14.0 --product portly
+  "${SWIFT_BUILD[@]}" --triple x86_64-apple-macosx14.0 --product portly
+  ARM64_BIN_DIR="$("${SWIFT_BUILD[@]}" --triple arm64-apple-macosx14.0 --show-bin-path)"
+  X86_64_BIN_DIR="$("${SWIFT_BUILD[@]}" --triple x86_64-apple-macosx14.0 --show-bin-path)"
   BIN_DIR="$ARM64_BIN_DIR"
 else
-  swift build -c release --product PortlyApp
-  swift build -c release --product portly
-  BIN_DIR="$(swift build -c release --show-bin-path)"
+  "${SWIFT_BUILD[@]}" --product PortlyApp
+  "${SWIFT_BUILD[@]}" --product portly
+  BIN_DIR="$("${SWIFT_BUILD[@]}" --show-bin-path)"
 fi
 
 VERSION="$(grep -o '"[0-9][^"]*"' "$ROOT/Sources/PortlyCore/Version.swift" | tr -d '"')"
@@ -93,11 +104,20 @@ else
   cp "$BIN_DIR/PortlyApp" "$APP/Contents/MacOS/Portly"
 fi
 
-# SwiftTerm ships a resource bundle; carry it along if this build produced one.
+# SwiftPM resource bundles: the app's glyphs, and SwiftTerm's shaders.
 for bundle in "$BIN_DIR"/*.bundle; do
   [ -e "$bundle" ] || continue
   cp -R "$bundle" "$APP/Contents/Resources/"
 done
+
+# The glyph bundle has to travel inside the app. On the Mac that built it a
+# missing copy goes unnoticed, because the build directory is still there to
+# fall back on; everywhere else the app would come up without a single icon.
+GLYPHS="$APP/Contents/Resources/Portly_PortlyApp.bundle"
+if [ -z "$(find "$GLYPHS" -name icon-catalog.json -print -quit 2>/dev/null)" ]; then
+  echo "The glyph bundle did not make it into the app: $GLYPHS" >&2
+  exit 1
+fi
 
 # The downloadable app performs agent setup itself, so it must carry both the
 # distributable skill and a CLI matching the app's architectures.

@@ -5,6 +5,9 @@ import SwiftUI
 
 struct ResourceDashboard: View {
     @EnvironmentObject private var supervisor: Supervisor
+    /// The two-second samples. Observing them is also what keeps the per-server
+    /// rows live, since the supervisor no longer republishes on every sample.
+    @ObservedObject private var resources = Supervisor.shared.resources
     @State private var pendingExternalStop: ExternalProcessSnapshot?
     @State private var processActionError: String?
     @State private var stoppingProcessIDs = Set<Int32>()
@@ -97,7 +100,7 @@ struct ResourceDashboard: View {
     }
 
     private var externalProcesses: [ExternalProcessSnapshot] {
-        Array(supervisor.externalProcesses.prefix(20))
+        Array(resources.externalProcesses.prefix(20))
     }
 
     private var diagnostics: [MemoryDiagnostic] {
@@ -110,7 +113,7 @@ struct ResourceDashboard: View {
                     metrics: $0.metrics
                 )
             },
-            projectHistory: supervisor.projectResourceHistory,
+            projectHistory: resources.projectResourceHistory,
             externalProcesses: externalProcesses,
             physicalMemoryBytes: physicalMemoryBytes
         )
@@ -556,7 +559,7 @@ struct ResourceDashboard: View {
             title: "Managed memory history",
             subtitle: "All managed projects · five-minute window"
         ) {
-            if supervisor.resourceHistory.count < 2 {
+            if resources.resourceHistory.count < 2 {
                 VStack(spacing: 10) {
                     ProgressView()
                         .controlSize(.small)
@@ -572,7 +575,7 @@ struct ResourceDashboard: View {
                         legend("Resident", color: .blue)
                     }
 
-                    Chart(supervisor.resourceHistory) { point in
+                    Chart(resources.resourceHistory) { point in
                         AreaMark(
                             x: .value("Time", point.timestamp),
                             y: .value("Footprint", gibibytes(point.footprintBytes))
@@ -629,7 +632,7 @@ struct ResourceDashboard: View {
     }
 
     private var projectHistory: some View {
-        let history = supervisor.projectResourceHistory
+        let history = resources.projectResourceHistory
         let activeProjects = projectRows
         let styles = DashboardProjectChartStyleScale.make(
             history: history,

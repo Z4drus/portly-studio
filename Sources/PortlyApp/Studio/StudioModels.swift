@@ -262,6 +262,10 @@ struct StudioConfig: Codable {
     /// dialog never interrupts the first agent terminal opened there.
     var trustNewProjectsInClaudeCode: Bool
     var sessions: [TerminalSession]
+    /// When each project was last worked on: a session opened or an agent busy
+    /// in it, a server started or stopped, the project added or brought back
+    /// from the older-projects list. The sidebar only lists recent ones.
+    var projectActivity: [String: Date]
 
     static let defaultFontSize: Double = 13
     static let minimumFontSize: Double = 9
@@ -278,7 +282,8 @@ struct StudioConfig: Codable {
         envPanelSize: CGSize = CGSize(width: 760, height: 520),
         reopenSessionsAtLaunch: Bool = true,
         trustNewProjectsInClaudeCode: Bool = true,
-        sessions: [TerminalSession] = []
+        sessions: [TerminalSession] = [],
+        projectActivity: [String: Date] = [:]
     ) {
         self.version = version
         self.defaultAgent = defaultAgent
@@ -291,6 +296,7 @@ struct StudioConfig: Codable {
         self.reopenSessionsAtLaunch = reopenSessionsAtLaunch
         self.trustNewProjectsInClaudeCode = trustNewProjectsInClaudeCode
         self.sessions = sessions
+        self.projectActivity = projectActivity
     }
 
     init(from decoder: Decoder) throws {
@@ -306,6 +312,7 @@ struct StudioConfig: Codable {
         reopenSessionsAtLaunch = try c.decodeIfPresent(Bool.self, forKey: .reopenSessionsAtLaunch) ?? true
         trustNewProjectsInClaudeCode = try c.decodeIfPresent(Bool.self, forKey: .trustNewProjectsInClaudeCode) ?? true
         sessions = try c.decodeIfPresent([TerminalSession].self, forKey: .sessions) ?? []
+        projectActivity = try c.decodeIfPresent([String: Date].self, forKey: .projectActivity) ?? [:]
     }
 
     /// The command a new agent pane types, or nil for a bare shell.
@@ -398,9 +405,81 @@ enum ClaudeTranscripts {
         }
     }
 
+    /// When the conversation was last written to, which is the most honest
+    /// "last worked on" a session has: it moves with every exchange, inside
+    /// Portly or out of it.
+    static func lastModified(sessionID: String, projectRoot: String) -> Date? {
+        let url = projectsDirectory
+            .appendingPathComponent(encodedDirectoryName(forProjectRoot: projectRoot), isDirectory: true)
+            .appendingPathComponent("\(sessionID).jsonl")
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        return attributes?[.modificationDate] as? Date
+    }
+
     /// The command that starts or resumes the pane's Claude conversation.
-    static func launchCommand(base: String, sessionID: String?, hasTranscript: Bool) -> String {
+    /// A `resumeNote` rides along as the first message of a resumed one.
+    static func launchCommand(
+        base: String,
+        sessionID: String?,
+        hasTranscript: Bool,
+        resumeNote: String? = nil
+    ) -> String {
         guard let sessionID, base.hasPrefix("claude") else { return base }
-        return hasTranscript ? "\(base) --resume \(sessionID)" : "\(base) --session-id \(sessionID)"
+        guard hasTranscript else { return "\(base) --session-id \(sessionID)" }
+        let resumed = "\(base) --resume \(sessionID)"
+        guard let resumeNote, !resumeNote.isEmpty else { return resumed }
+        return "\(resumed) \(ResumeNotes.shellQuoted(resumeNote))"
+    }
+}
+
+// MARK: - Resume notes
+
+/// One-shot messages for an agent to find when its conversation is resumed.
+///
+/// Quitting Portly ends every agent it runs, including one that is in the
+/// middle of replacing Portly itself. Relaunching brings the conversation back
+/// (`--resume`), but a resumed agent waits to be spoken to. A note left in
+/// `~/.config/portly/resume-notes.json`, keyed by conversation id, is handed to
+/// that conversation as its first message and deleted as it is read, so work
+/// that had to interrupt itself can say how to carry on:
+///
+///     { "<conversation id>": "The new build is installed. Verify it and report." }
+///
+/// This grants nothing new: whoever can write that file can already edit the
+/// launch commands in `studio.json` beside it.
+enum ResumeNotes {
+    static let maximumLength = 2000
+
+    static var defaultURL: URL {
+        StudioStore.defaultURL.deletingLastPathComponent().appendingPathComponent("resume-notes.json")
+    }
+
+    /// The note for a conversation, removed from the file as it is returned.
+    static func take(sessionID: String, url: URL = defaultURL) -> String? {
+        guard let data = try? Data(contentsOf: url),
+              var notes = try? JSONDecoder().decode([String: String].self, from: data),
+              let note = notes.removeValue(forKey: sessionID) else { return nil }
+        if notes.isEmpty {
+            try? FileManager.default.removeItem(at: url)
+        } else if let remaining = try? JSONEncoder().encode(notes) {
+            try? remaining.write(to: url, options: .atomic)
+        }
+        let cleaned = sanitized(note)
+        return cleaned.isEmpty ? nil : cleaned
+    }
+
+    /// One line, bounded: the note is typed into a shell.
+    static func sanitized(_ note: String) -> String {
+        let singleLine = note.components(separatedBy: .newlines).joined(separator: " ")
+        let printable = singleLine.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }
+        return String(String(String.UnicodeScalarView(printable))
+            .trimmingCharacters(in: .whitespaces)
+            .prefix(maximumLength))
+    }
+
+    /// Single quotes stop every expansion in zsh, bash and fish alike; an
+    /// embedded quote closes, escapes itself, and reopens.
+    static func shellQuoted(_ text: String) -> String {
+        "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 }

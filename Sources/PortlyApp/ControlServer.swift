@@ -152,10 +152,10 @@ final class ControlServer {
                 if project.servers.contains(where: { $0.name.caseInsensitiveCompare(body.name) == .orderedSame }) {
                     return (400, try fail("\(project.name) already has a server named '\(body.name)'"))
                 }
-                if let port = body.port, let conflict = supervisor.server(configuredOn: port) {
+                if let port = body.port, let conflict = supervisor.runningServer(configuredOn: port) {
                     let next = supervisor.nextAvailablePort(startingAt: 3000)
                     return (400, try fail(
-                        "Port \(port) is already configured for \(conflict.project.name)/\(conflict.server.name). Try \(next)."
+                        "Port \(port) is in use right now by \(conflict.project.name)/\(conflict.server.name). Stop it, or try \(next)."
                     ))
                 }
                 guard validActions(body.actions ?? []) else {
@@ -248,10 +248,10 @@ final class ControlServer {
                 guard validActions(config.actions) else {
                     return (400, try fail("Actions need unique non-empty names and non-empty commands"))
                 }
-                if let port = config.port, let conflict = supervisor.server(configuredOn: port, excluding: config.id) {
+                if let port = config.port, let conflict = supervisor.runningServer(configuredOn: port, excluding: config.id) {
                     let next = supervisor.nextAvailablePort(startingAt: 3000, excluding: config.id)
                     return (400, try fail(
-                        "Port \(port) is already configured for \(conflict.project.name)/\(conflict.server.name). Try \(next)."
+                        "Port \(port) is in use right now by \(conflict.project.name)/\(conflict.server.name). Stop it, or try \(next)."
                     ))
                 }
                 supervisor.updateServer(config)

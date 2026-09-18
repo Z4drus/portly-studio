@@ -47,7 +47,7 @@ final class IconCatalog {
     }
 
     private func load() {
-        guard let url = Bundle.module.url(forResource: "icon-catalog", withExtension: "json"),
+        guard let url = PortlyResources.url(forResource: "icon-catalog", withExtension: "json"),
               let data = try? Data(contentsOf: url),
               let entries = try? JSONDecoder().decode([Entry].self, from: data)
         else {
@@ -134,7 +134,7 @@ enum IconImageCache {
 
         let parts = id.split(separator: "/", maxSplits: 1).map(String.init)
         guard parts.count == 2,
-              let url = Bundle.module.url(
+              let url = PortlyResources.url(
                 forResource: parts[1],
                 withExtension: "svg",
                 subdirectory: "Icons/\(parts[0])"

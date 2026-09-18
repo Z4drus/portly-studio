@@ -56,6 +56,10 @@ cd portly-studio
 `~/.agents/skills/portly`, adds marker-delimited Portly rules to `~/.agents/AGENTS.md`, and launches
 the app. Reinstalling quits the running app first, which stops every supervised server.
 
+`build.sh` asks SwiftPM for its native build engine. The newer default engine compiles SwiftTerm's
+Metal shaders and fails on a Mac without Xcode's separately downloaded Metal Toolchain; run
+`swift build --build-system native` and `swift test --build-system native` by hand for the same reason.
+
 - `./build.sh --no-install` assembles `dist/Portly Custom.app` without installing it.
 - `./build.sh --release` produces the universal, ad-hoc signed `dist/Portly-Studio-macOS.zip`.
 - `./build.sh --forever` also registers the LaunchAgent, so Portly starts at every login.
@@ -74,9 +78,22 @@ the maintainer's Apple ID and team identifier out of every downloaded copy.
   reopened.
 - **Agent presets** — a new terminal starts Claude Code (bypass permissions by default), Codex,
   Cursor Agent, Gemini CLI, a custom command, or a bare shell. Settings → Code.
-- **Relaunch** — every session respawns at launch and the last selection comes back. Claude Code
-  panes carry a session id (`--session-id`) and resume their conversation (`--resume`) after a quit
-  or a reboot; a *Reset* button in the pane header starts a fresh chat.
+- **A sidebar of what is in use** — the sidebar lists a project while one of its servers runs, and
+  for a day after anything was last done in it (a session opened, an agent busy, a server started or
+  stopped). The rest wait behind the button left of the search field: it opens the full list,
+  searchable by name, and picking a project brings it back with its servers listed (none is started)
+  and a coding session open on it. The project on screen never disappears from under you.
+- **Relaunch** — the sessions of the projects in the sidebar respawn at launch and the last selection
+  comes back; a project put away respawns its sessions the moment one is opened. Claude Code panes
+  carry a session id (`--session-id`) and resume their conversation (`--resume`) after a quit or a
+  reboot; a *Reset* button in the pane header starts a fresh chat.
+- **Resume notes** — quitting Portly ends the agents it runs, including one that is busy replacing
+  Portly itself. A one-line note left in `~/.config/portly/resume-notes.json`, keyed by Claude
+  conversation id (`{"<id>": "The new build is installed, verify it."}`), is handed to that
+  conversation as its first message when it resumes, and deleted as it is read.
+- **Option composes characters** — ⌥ types what your layout says it types (`{ } [ ] @ | ~ #` on
+  Swiss, German, French and other ISO layouts) instead of acting as Meta. It stays Meta for the keys
+  that produce no character, so ⌥← / ⌥→ and ⌥⌫ still move and delete by word.
 - **Workspace trust** — Claude Code asks "Is this a project you created or one you trust?" the first
   time it runs in a folder, and there is no flag to skip it. Creating a project in Portly answers it
   in advance by writing the same key its dialog writes
@@ -114,6 +131,11 @@ How much of each coding assistant's limit you have burned, read from the credent
 holds on the machine — Claude Code's keychain token by default; Codex, Cursor and Grok are opt-in in
 Settings → AI Usage. Nothing is sent anywhere except to each vendor's own usage endpoint.
 
+Claude Code's token is read the way Claude Code reads it, through `/usr/bin/security`. That is what
+keeps macOS from asking: a keychain item only answers the applications on its access list, Claude
+Code files a new item at every token rotation, and the application on each new list is `security`.
+Read directly, the item prompted again every hour however often *Always Allow* was chosen.
+
 A black notch on a screen edge shows one ring per assistant and unfolds on hover, with a tooltip
 listing every limit window — Claude's current session, the all-models week, and per-model weekly
 windows such as Fable — and when each resets. Clicking a ring refreshes it. The same readings sit in
@@ -136,6 +158,11 @@ Portly's job: run them directly, in the foreground, with a timeout.
 A busy configured port makes the server start on the next free one (`PORT` and an explicit
 `-p`/`--port` are rewritten), with a banner to take the configured port back; every port the process
 tree listens on shows in the sidebar and in the Open menu.
+
+Two projects may be configured on the same port. Old projects pile up, and the one that used 3000
+months ago should not keep it from everything since: `add-server` and `update-server` only refuse a
+port that another Portly server holds *right now*. Whichever of the two starts second is handled as
+any busy port is.
 
 The native **Resources** screen samples every Portly-owned process tree every two seconds and keeps a
 five-minute memory history: physical footprint, resident RAM, CPU, project trends, and the current

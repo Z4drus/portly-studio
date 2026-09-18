@@ -73,6 +73,8 @@ Register projects with `portly add-project --name <name> --path <absolute-path> 
 
 Portly injects `PORT`, `PORTLY=1`, and `PORTLY_SERVER`. The configured port drives health checks; a process that does not listen there will not become healthy.
 
+A port already configured on another project is fine as long as that server is not running: old projects keep their port on paper, and only a server holding the port right now makes `add-server` or `update-server` refuse it. Prefer the project's conventional port over hunting for an unused number.
+
 ## Operate and diagnose
 
 Use `start`, `stop`, or `restart` with a server, or `--project <project>`. `portly stop --all --json` stops everything. Use `update-server` to change fields, then restart a running server.

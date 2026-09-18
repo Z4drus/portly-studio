@@ -1,5 +1,4 @@
 import Foundation
-import Security
 
 /// The OAuth token Claude Code keeps in the login keychain.
 ///
@@ -16,33 +15,35 @@ struct ClaudeCredentials {
     var isExpired: Bool { expiresAt <= Date() }
 
     /// The keychain read itself, for one service name. Every failure is turned
-    /// into the status the UI should show, and the raw OSStatus is logged so
-    /// "not found" and "refused" stay distinct.
+    /// into the status the UI should show.
+    ///
+    /// The secret is read by `/usr/bin/security`, not by this process, and that
+    /// is the whole fix for a prompt that kept coming back. A keychain item
+    /// only hands its data to the applications on its access list. Claude Code
+    /// reads and writes this item through the `security` tool, so `security` is
+    /// the application on that list; Portly is not, and "Always Allow" could
+    /// never stick, because Claude Code files a fresh item (with a fresh list)
+    /// every time it rotates the token, about once an hour. Asking through the
+    /// same tool the owner uses is answered silently, every time, by design.
     static func read(service: String) throws -> ClaudeCredentials {
+        // Attributes only: never prompts. Picks the newest of the duplicates
+        // Claude Code leaves behind, and says which account to ask for.
         guard let winner = KeychainItem.newest(service: service) else {
             UsageLog.usage.error("keychain read failed: no item under \(service, privacy: .public)")
             throw UsageProviderError.needsAuth
         }
 
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching([
-            kSecClass: kSecClassGenericPassword,
-            kSecValuePersistentRef: winner.persistentRef,
-            kSecReturnData: true,
-            kSecMatchLimit: kSecMatchLimitOne
-        ] as CFDictionary, &item)
-
-        guard status == errSecSuccess, let data = item as? Data else {
-            UsageLog.usage.error("keychain read of \(service, privacy: .public) failed: OSStatus \(status) (\(Self.explain(status), privacy: .public))")
-            // A machine just woken from sleep answers -25320: awake enough to
-            // run background work, not to show a dialogue. The credential is
-            // unaffected, so the last reading merely ages.
-            if Self.wasTransient(status) { throw UsageProviderError.credentialExpired }
-            throw Self.wasRefused(status)
-                ? UsageProviderError.accessDenied
-                : UsageProviderError.needsAuth
+        let result = SecurityTool.findGenericPassword(service: service, account: winner.account)
+        guard result.status == 0, let data = result.secret else {
+            UsageLog.usage.error("security could not read \(service, privacy: .public): exit \(result.status)")
+            throw SecurityTool.error(forExitStatus: result.status)
         }
+        return try decode(data)
+    }
 
+    /// The stored JSON, as Claude Code writes it. `security -w` prints a secret
+    /// it considers unprintable as hex, so that form is accepted too.
+    static func decode(_ data: Data) throws -> ClaudeCredentials {
         struct Payload: Decodable {
             struct OAuth: Decodable {
                 let accessToken: String
@@ -53,41 +54,16 @@ struct ClaudeCredentials {
             let claudeAiOauth: OAuth
         }
 
-        guard let payload = try? JSONDecoder().decode(Payload.self, from: data) else {
-            throw UsageProviderError.needsAuth
-        }
+        let decoder = JSONDecoder()
+        let payload = (try? decoder.decode(Payload.self, from: data))
+            ?? SecurityTool.dataFromHex(data).flatMap { try? decoder.decode(Payload.self, from: $0) }
+        guard let payload else { throw UsageProviderError.needsAuth }
 
         return ClaudeCredentials(
             accessToken: payload.claudeAiOauth.accessToken,
             expiresAt: Date(timeIntervalSince1970: payload.claudeAiOauth.expiresAt / 1000),
             subscriptionType: payload.claudeAiOauth.subscriptionType
         )
-    }
-
-    /// Whether macOS refused a credential that exists, rather than failing to
-    /// find one. `errSecAuthFailed` and `userCanceled` are what Deny produces;
-    /// `interactionNotAllowed` is the same refusal arriving without a prompt.
-    static func wasRefused(_ status: OSStatus) -> Bool {
-        status == errSecAuthFailed
-            || status == errSecUserCanceled
-            || status == errSecInteractionNotAllowed
-    }
-
-    /// -25320, "in dark wake, no UI possible": a read that failed for a reason
-    /// with nothing to do with the account.
-    static func wasTransient(_ status: OSStatus) -> Bool {
-        status == -25320
-    }
-
-    static func explain(_ status: OSStatus) -> String {
-        switch status {
-        case errSecItemNotFound: return "no such item — Claude Code has not signed in"
-        case errSecInteractionNotAllowed: return "access not permitted without interaction"
-        case errSecUserCanceled: return "the access prompt was dismissed or denied"
-        case errSecAuthFailed: return "authorisation failed"
-        default:
-            return (SecCopyErrorMessageString(status, nil) as String?) ?? "unknown"
-        }
     }
 }
 
@@ -119,7 +95,11 @@ final class ClaudeKeychain: @unchecked Sendable {
         )
     }
 
-    /// Forget the held copy: the server rejected it, or the user asked to be
-    /// prompted again.
+    /// Whatever is already held, without going anywhere for it. For callers on
+    /// the main thread, which must never wait on another process.
+    func held() -> ClaudeCredentials? { cache.held }
+
+    /// Forget the held copy: the server rejected it, or the user asked for a
+    /// fresh read.
     func forgetCached() { cache.forget() }
 }

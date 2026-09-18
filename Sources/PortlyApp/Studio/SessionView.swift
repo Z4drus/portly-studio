@@ -3,14 +3,28 @@ import PortlyCore
 import SwiftUI
 
 /// A coding session: one to five terminals, split any way you like.
+///
+/// This outer view observes nothing, on purpose. It is the one that carries the
+/// window toolbar, and SwiftUI rewrites the toolbar every time the view that
+/// declares it is re-evaluated. Declared next to the session state, the toolbar
+/// was rebuilt on every title, focus and activity change, which on macOS 27
+/// shows as a dark flicker across the whole bar. The items observe what they
+/// need themselves, so only an item whose own state moved is redrawn.
 struct SessionView: View {
     let sessionID: String
 
+    var body: some View {
+        SessionContentView(sessionID: sessionID)
+            .toolbar { SessionToolbar(sessionID: sessionID) }
+    }
+}
+
+private struct SessionContentView: View {
+    let sessionID: String
+
     @ObservedObject private var workspace = StudioWorkspace.shared
-    @EnvironmentObject private var supervisor: Supervisor
     @State private var renaming = false
     @State private var draftName = ""
-    @State private var showingHelp = false
     @FocusState private var nameFocused: Bool
 
     private var session: TerminalSession? { workspace.session(sessionID) }
@@ -57,12 +71,17 @@ struct SessionView: View {
             .animation(Motion.paneSwap, value: session.layout.paneIDs)
             .animation(Motion.paneSwap, value: session.zoomedPaneID)
         }
-        .toolbar { toolbarContent(session) }
         .navigationTitle(session.name)
         .navigationSubtitle(project?.name ?? "")
+        .onChange(of: workspace.sessionBarRenameRequest) {
+            guard workspace.sessionBarRenameRequest == session.id else { return }
+            workspace.sessionBarRenameRequest = nil
+            beginRename(session)
+        }
         .onAppear {
             workspace.activeSessionID = session.id
             workspace.activeProjectID = session.projectID
+            workspace.touchProject(session.projectID)
             focusCurrentPane(session)
         }
         .onDisappear {
@@ -172,78 +191,130 @@ struct SessionView: View {
         renaming = false
         focusCurrentPane(session)
     }
+}
 
-    // MARK: - Toolbar
+// MARK: - Toolbar
 
-    @ToolbarContentBuilder
-    private func toolbarContent(_ session: TerminalSession) -> some ToolbarContent {
+/// The session's window toolbar. Every item is its own small view, so a change
+/// in the workspace redraws the one button it concerns and leaves the rest of
+/// the bar alone.
+private struct SessionToolbar: ToolbarContent {
+    let sessionID: String
+
+    var body: some ToolbarContent {
         ToolbarItemGroup {
-            Button {
-                showingHelp.toggle()
-            } label: {
-                NucleoLabel("Shortcuts", icon: .info)
-            }
-            .help("Keyboard shortcuts")
-            .popover(isPresented: $showingHelp, arrowEdge: .bottom) {
-                ShortcutsHelpPopover()
-            }
+            ShortcutsToolbarButton()
+            SplitToolbarButton(sessionID: sessionID, axis: .horizontal)
+            SplitToolbarButton(sessionID: sessionID, axis: .vertical)
+            SessionMoreMenu(sessionID: sessionID)
+            ZoomToolbarButton(sessionID: sessionID)
+            EnvironmentToolbarButton(sessionID: sessionID)
 
             Button {
-                workspace.split(sessionID: session.id, axis: .horizontal)
-            } label: {
-                NucleoLabel("Split Right", icon: .splitRight)
-            }
-            .disabled(!workspace.canAddPane(to: session.id))
-            .help("Open a new terminal to the right (⌘D)")
-
-            Button {
-                workspace.split(sessionID: session.id, axis: .vertical)
-            } label: {
-                NucleoLabel("Split Down", icon: .splitDown)
-            }
-            .disabled(!workspace.canAddPane(to: session.id))
-            .help("Open a new terminal below (⇧⌘D)")
-
-            Menu {
-                Button("New Agent Terminal") {
-                    workspace.split(sessionID: session.id, axis: .horizontal, kind: .agent)
-                }
-                Button("New Shell Terminal") {
-                    workspace.split(sessionID: session.id, axis: .horizontal, kind: .shell)
-                }
-                Divider()
-                Button("Rename Session…") { beginRename(session) }
-                Button("Close Session", role: .destructive) {
-                    workspace.removeSession(session.id)
-                    workspace.pendingSelection = .project(session.projectID)
-                }
-            } label: {
-                NucleoLabel("More", icon: .dots)
-            }
-            .help("More session actions")
-
-            Button {
-                workspace.toggleZoom(sessionID: session.id)
-            } label: {
-                NucleoLabel(session.zoomedPaneID == nil ? "Zoom Pane" : "Unzoom", icon: .fullscreen)
-            }
-            .disabled(session.panes.count < 2)
-            .help("Show only the focused terminal (⇧⌘↩)")
-
-            Button {
-                workspace.toggleEnvPanel(projectID: session.projectID)
-            } label: {
-                NucleoLabel("Environment", icon: .key)
-            }
-            .help("Edit the project's .env files (⇧⌘E)")
-
-            Button {
-                workspace.toggleQuickTerminal()
+                StudioWorkspace.shared.toggleQuickTerminal()
             } label: {
                 NucleoLabel("Quick Terminal", icon: .terminalSquare)
             }
             .help("Toggle the project's quick terminal (⌘J)")
         }
+    }
+}
+
+private struct ShortcutsToolbarButton: View {
+    @State private var showingHelp = false
+
+    var body: some View {
+        Button {
+            showingHelp.toggle()
+        } label: {
+            NucleoLabel("Shortcuts", icon: .info)
+        }
+        .help("Keyboard shortcuts")
+        .popover(isPresented: $showingHelp, arrowEdge: .bottom) {
+            ShortcutsHelpPopover()
+        }
+    }
+}
+
+private struct SplitToolbarButton: View {
+    let sessionID: String
+    let axis: SplitAxis
+
+    @ObservedObject private var workspace = StudioWorkspace.shared
+
+    var body: some View {
+        Button {
+            workspace.split(sessionID: sessionID, axis: axis)
+        } label: {
+            NucleoLabel(
+                axis == .horizontal ? "Split Right" : "Split Down",
+                icon: axis == .horizontal ? .splitRight : .splitDown
+            )
+        }
+        .disabled(!workspace.canAddPane(to: sessionID))
+        .help(axis == .horizontal
+            ? "Open a new terminal to the right (⌘D)"
+            : "Open a new terminal below (⇧⌘D)")
+    }
+}
+
+private struct SessionMoreMenu: View {
+    let sessionID: String
+
+    var body: some View {
+        Menu {
+            Button("New Agent Terminal") {
+                StudioWorkspace.shared.split(sessionID: sessionID, axis: .horizontal, kind: .agent)
+            }
+            Button("New Shell Terminal") {
+                StudioWorkspace.shared.split(sessionID: sessionID, axis: .horizontal, kind: .shell)
+            }
+            Divider()
+            Button("Rename Session…") {
+                StudioWorkspace.shared.sessionBarRenameRequest = sessionID
+            }
+            Button("Close Session", role: .destructive) {
+                let workspace = StudioWorkspace.shared
+                guard let projectID = workspace.session(sessionID)?.projectID else { return }
+                workspace.removeSession(sessionID)
+                workspace.pendingSelection = .project(projectID)
+            }
+        } label: {
+            NucleoLabel("More", icon: .dots)
+        }
+        .help("More session actions")
+    }
+}
+
+private struct ZoomToolbarButton: View {
+    let sessionID: String
+
+    @ObservedObject private var workspace = StudioWorkspace.shared
+
+    var body: some View {
+        let session = workspace.session(sessionID)
+        Button {
+            workspace.toggleZoom(sessionID: sessionID)
+        } label: {
+            NucleoLabel(session?.zoomedPaneID == nil ? "Zoom Pane" : "Unzoom", icon: .fullscreen)
+        }
+        .disabled((session?.panes.count ?? 0) < 2)
+        .help("Show only the focused terminal (⇧⌘↩)")
+    }
+}
+
+private struct EnvironmentToolbarButton: View {
+    let sessionID: String
+
+    var body: some View {
+        Button {
+            let workspace = StudioWorkspace.shared
+            guard let projectID = workspace.session(sessionID)?.projectID else { return }
+            workspace.toggleEnvPanel(projectID: projectID)
+        } label: {
+            NucleoLabel("Environment", icon: .key)
+        }
+        .help("Edit the project's .env files (⇧⌘E)")
     }
 }
 

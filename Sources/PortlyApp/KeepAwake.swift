@@ -42,7 +42,10 @@ final class KeepAwake: ObservableObject {
     @Published private(set) var lidSleepBlocked = false
     @Published private(set) var networkOnline = true
     @Published private(set) var workingCount = 0
-    @Published private(set) var idleSeconds = 0
+    /// When the agents last went quiet, nil while one is working. Published in
+    /// place of a running seconds count: that changed on every tick and rebuilt
+    /// the toolbar item that reads it, which flickers on recent macOS.
+    @Published private(set) var idleSince: Date?
     @Published private(set) var lastAutoRelease: AutoRelease?
     @Published private(set) var sudoRuleInstalled = false
     @Published private(set) var lastError: String?
@@ -76,7 +79,6 @@ final class KeepAwake: ObservableObject {
     private let defaults = UserDefaults.standard
     private var assertion: IOPMAssertionID = 0
     private var ticker: Timer?
-    private var idleSince: Date?
     private var offlineSince: Date?
     private let monitor = NWPathMonitor()
     private let monitorQueue = DispatchQueue(label: "dev.portly.keepawake.network")
@@ -139,7 +141,6 @@ final class KeepAwake: ObservableObject {
         stopTicker()
         idleSince = nil
         offlineSince = nil
-        idleSeconds = 0
         if reason != .manual {
             lastAutoRelease = AutoRelease(reason: reason, date: Date())
             Self.notify(title: "Portly let the Mac sleep", body: "Keep awake ended: \(reason.message).")
@@ -186,16 +187,17 @@ final class KeepAwake: ObservableObject {
     /// reason to stay awake is gone.
     func evaluate(now: Date = Date()) {
         refreshBattery()
-        workingCount = StudioWorkspace.shared.workingPaneCount()
+        // Every assignment below is guarded: `@Published` notifies on each
+        // write, changed or not, and this runs on a timer.
+        let working = StudioWorkspace.shared.workingPaneCount()
+        if working != workingCount { workingCount = working }
         guard isActive else { return }
 
         if workingCount > 0 {
-            idleSince = nil
-            idleSeconds = 0
+            if idleSince != nil { idleSince = nil }
         } else {
             if idleSince == nil { idleSince = now }
-            idleSeconds = Int(now.timeIntervalSince(idleSince ?? now))
-            if idleSeconds >= idleMinutes * 60 {
+            if now.timeIntervalSince(idleSince ?? now) >= Double(idleMinutes * 60) {
                 deactivate(reason: .agentsIdle)
                 return
             }
@@ -322,19 +324,23 @@ final class KeepAwake: ObservableObject {
         guard let snapshot = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
               let sources = IOPSCopyPowerSourcesList(snapshot)?.takeRetainedValue() as? [CFTypeRef]
         else {
-            batteryPercent = nil
-            onBattery = false
+            if batteryPercent != nil { batteryPercent = nil }
+            if onBattery { onBattery = false }
             return
         }
+        var percent = batteryPercent
+        var battery = onBattery
         for source in sources {
             guard let description = IOPSGetPowerSourceDescription(snapshot, source)?.takeUnretainedValue() as? [String: Any] else { continue }
             if let capacity = description["Current Capacity"] as? Int {
-                batteryPercent = capacity
+                percent = capacity
             }
             if let state = description["Power Source State"] as? String {
-                onBattery = state == "Battery Power"
+                battery = state == "Battery Power"
             }
         }
+        if percent != batteryPercent { batteryPercent = percent }
+        if battery != onBattery { onBattery = battery }
     }
 
     // MARK: - Notifications

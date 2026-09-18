@@ -79,6 +79,7 @@ struct MainView: View {
             applyPendingSelection()
             restoreLastSelection()
             syncWorkspaceContext()
+            workspace.seedProjectActivity(projects: supervisor.projects)
             installDoubleClickMonitor()
             // Give the window a beat to appear before respawning every shell.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
@@ -209,6 +210,19 @@ struct MainView: View {
                 ContentUnavailableView.search(text: search)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(.background)
+            } else if showAllPutAway {
+                VStack(spacing: 6) {
+                    NucleoIconView(.history, size: 22)
+                        .foregroundStyle(.tertiary)
+                    Text("Nothing in use right now")
+                        .font(PortlyTypography.bodyMedium)
+                    Text("Projects untouched for a day wait behind the button next to the search field.")
+                        .font(PortlyTypography.metadata)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding(.horizontal, 18)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         // Running projects float to the top, so rows change place on their own.
@@ -244,12 +258,46 @@ struct MainView: View {
             .map(\.element)
     }
 
+    /// Projects in use: a server running, something done in the last day, or
+    /// simply the one on screen. The rest wait behind the older-projects button.
+    private var listedProjects: [Project] {
+        let now = Date()
+        let selectedID = currentProject?.id
+        return sidebarProjects.filter { project in
+            SidebarVisibility.isVisible(
+                hasRunningServer: projectIsRunning(project),
+                lastActivity: workspace.lastActivity(forProject: project.id),
+                isSelected: project.id == selectedID,
+                now: now
+            )
+        }
+    }
+
+    private var olderProjects: [Project] {
+        let listed = Set(listedProjects.map(\.id))
+        return supervisor.projects.filter { !listed.contains($0.id) }
+    }
+
     private var filteredSidebarProjects: [Project] {
-        SidebarSearch.filterProjects(sidebarProjects, query: search)
+        SidebarSearch.filterProjects(listedProjects, query: search)
     }
 
     private var showEmptySearch: Bool {
         SidebarSearch.isActive(search) && filteredSidebarProjects.isEmpty
+    }
+
+    /// Every project is put away: say so, rather than show an empty column.
+    private var showAllPutAway: Bool {
+        !SidebarSearch.isActive(search) && listedProjects.isEmpty && !supervisor.projects.isEmpty
+    }
+
+    /// Back in the sidebar, expanded so its servers show (none is started),
+    /// with a coding session open on it.
+    private func bringBack(_ project: Project) {
+        if collapsedProjects.contains(project.id) { toggleCollapsed(project.id) }
+        search = ""
+        let session = workspace.revealProject(project.id)
+        selection = .session(session.id)
     }
 
     /// Search returns truncated `Project` copies. Mutations and "open" must use
@@ -259,7 +307,7 @@ struct MainView: View {
     }
 
     private func activateFirstMatch() {
-        switch SidebarSearch.firstMatch(projects: sidebarProjects, query: search) {
+        switch SidebarSearch.firstMatch(projects: listedProjects, query: search) {
         case .server(let id):
             selection = .server(id)
         case .project(let id):
@@ -290,7 +338,14 @@ struct MainView: View {
             text: $search,
             focused: $searchFocused,
             onSubmit: activateFirstMatch
-        )
+        ) {
+            OlderProjectsButton(
+                hidden: olderProjects,
+                listed: listedProjects,
+                lastActivity: { workspace.lastActivity(forProject: $0) },
+                onPick: bringBack
+            )
+        }
     }
 
     private var sidebarActions: some View {

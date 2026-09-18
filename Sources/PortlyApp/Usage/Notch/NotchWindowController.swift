@@ -45,6 +45,16 @@ final class NotchWindowController {
     /// twitchy rather than responsive.
     private let foldGrace: TimeInterval = 0.45
     private var foldWork: DispatchWorkItem?
+    /// When the pointer was last seen leaving the open notch.
+    ///
+    /// The fold used to hang on `foldWork` alone: one block, scheduled once.
+    /// If that block was ever lost (cancelled by a racing state change, or
+    /// simply never run while the app was stalled behind a system dialogue)
+    /// nothing scheduled another, because a pending-looking `foldWork` made
+    /// every later attempt return early, and the notch sat open and empty until
+    /// the pointer came back to it. A timestamp cannot be lost: every poll
+    /// checks it, so an overdue fold happens on the next tick at the latest.
+    private var outsideSince: Date?
     /// Whether we have pushed the pointing hand onto the cursor stack.
     private var isPointing = false
     /// The usable area the panel was last placed against.
@@ -351,27 +361,49 @@ final class NotchWindowController {
         if wanted {
             foldWork?.cancel()
             foldWork = nil
+            outsideSince = nil
             guard !model.isExpanded else { return }
             withAnimation(NotchMotion.unfold) { model.isExpanded = true }
             return
         }
 
-        guard model.isExpanded, !model.staysOpen, foldWork == nil else { return }
+        guard model.isExpanded, !model.staysOpen else {
+            outsideSince = nil
+            return
+        }
+        let now = Date()
+        let since = outsideSince ?? now
+        outsideSince = since
+        // Overdue: whatever was meant to fold it did not. Do it now.
+        if Self.foldIsOverdue(outsideSince: since, now: now, grace: foldGrace) {
+            fold()
+            return
+        }
+        guard foldWork == nil else { return }
         let work = DispatchWorkItem { [weak self] in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.foldWork = nil
-                guard !self.model.staysOpen else { return }
-                withAnimation(NotchMotion.unfold) {
-                    self.model.isExpanded = false
-                    self.model.hoveredIndex = nil
-                }
-                self.setPointing(false)
-                self.updateInteractiveRects()
-            }
+            MainActor.assumeIsolated { self?.fold() }
         }
         foldWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + foldGrace, execute: work)
+    }
+
+    /// Twice the grace: the scheduled fold gets its chance first, so this only
+    /// ever fires when that one went missing.
+    static func foldIsOverdue(outsideSince: Date, now: Date, grace: TimeInterval) -> Bool {
+        now.timeIntervalSince(outsideSince) >= grace * 2
+    }
+
+    private func fold() {
+        foldWork?.cancel()
+        foldWork = nil
+        outsideSince = nil
+        guard model.isExpanded, !model.staysOpen else { return }
+        withAnimation(NotchMotion.unfold) {
+            model.isExpanded = false
+            model.hoveredIndex = nil
+        }
+        setPointing(false)
+        updateInteractiveRects()
     }
 
     /// The rings are buttons, so they should say so.

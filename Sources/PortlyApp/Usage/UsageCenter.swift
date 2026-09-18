@@ -168,8 +168,8 @@ final class UsageCenter: ObservableObject {
         return ActivitySummary(sessions: sessions[providerID] ?? [])
     }
 
-    /// Refetch one provider. For a Claude ring refused by macOS this is also
-    /// the way to raise the keychain prompt again.
+    /// Refetch one provider. For a Claude ring that macOS refused, the held
+    /// credential is dropped first so the keychain is really asked again.
     func refresh(providerID: String) {
         if store.refusedAccess.contains(providerID) {
             store.reauthorize(providerID: providerID)

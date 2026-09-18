@@ -21,18 +21,31 @@ struct ProjectResourceHistoryPoint: Identifiable, Equatable {
     let residentBytes: UInt64
 }
 
+/// The two-second resource samples, kept apart from `Supervisor` on purpose.
+///
+/// Everything the main window draws observes the supervisor, so publishing a
+/// sample there re-evaluated the whole window (sidebar, detail and toolbar)
+/// every two seconds, which showed up as a periodic hitch in the terminals and
+/// a flicker in the toolbar. Only the views that chart these numbers observe
+/// this object.
+final class ResourceMonitor: ObservableObject {
+    @Published fileprivate(set) var resourceHistory: [ResourceHistoryPoint] = []
+    @Published fileprivate(set) var projectResourceHistory: [ProjectResourceHistoryPoint] = []
+    @Published fileprivate(set) var externalProcesses: [ExternalProcessSnapshot] = []
+}
+
 /// Owns the config and one `ServerRuntime` per configured server. Single source
 /// of truth for the UI, the control API and the config file.
 final class Supervisor: ObservableObject {
     static let shared = Supervisor()
 
     @Published private(set) var projects: [Project] = []
-    @Published private(set) var resourceHistory: [ResourceHistoryPoint] = []
-    @Published private(set) var projectResourceHistory: [ProjectResourceHistoryPoint] = []
-    @Published private(set) var externalProcesses: [ExternalProcessSnapshot] = []
     @Published private(set) var memoryLimitRestarts: [String: MemoryLimitRestartEvent] = [:]
-    /// Bumped on any runtime state change so SwiftUI redraws the lists.
+    /// Bumped on any runtime state change so SwiftUI redraws the lists. Never
+    /// on a timer: see `ResourceMonitor`.
     @Published private(set) var revision: Int = 0
+    /// Live resource samples, observed only by the views that show them.
+    let resources = ResourceMonitor()
 
     private let store: ConfigStore
     private(set) var runtimes: [String: ServerRuntime] = [:]
@@ -41,6 +54,8 @@ final class Supervisor: ObservableObject {
     private var metricsSampleInFlight = false
     private var metricsSampleSequence = 0
     private var memoryLimitGuard = MemoryLimitGuard()
+    /// Servers last seen running, to tell a stop from any other state report.
+    private var runningServerIDs = Set<String>()
 
     private struct UpdaterRelaunchState: Codable {
         let serverIDs: [String]
@@ -90,8 +105,26 @@ final class Supervisor: ObservableObject {
     }
 
     private func wire(_ runtime: ServerRuntime) {
-        runtime.onStateChange = { [weak self] in
-            DispatchQueue.main.async { self?.bump() }
+        runtime.onStateChange = { [weak self, weak runtime] in
+            DispatchQueue.main.async {
+                self?.bump()
+                // A live server is work on the project, so it stays in the
+                // sidebar for a day after its last server stops. Only while
+                // running: a stopped server also reports here when its
+                // dependencies are inspected, which is not somebody working.
+                guard let self, let runtime else { return }
+                let wasRunning = self.runningServerIDs.contains(runtime.id)
+                if runtime.isRunning {
+                    self.runningServerIDs.insert(runtime.id)
+                } else {
+                    self.runningServerIDs.remove(runtime.id)
+                }
+                // The stop itself counts, or a server that ran untouched for
+                // three days would take its project out of the sidebar with it.
+                if runtime.isRunning || wasRunning {
+                    StudioWorkspace.shared.touchProject(runtime.projectID)
+                }
+            }
         }
         runtime.onFailed = { runtime in
             Notifications.serverFailed(name: runtime.config.name, project: runtime.projectName, reason: runtime.lastError)
@@ -130,7 +163,7 @@ final class Supervisor: ObservableObject {
         metricsSampleSequence &+= 1
         // `ps` remains live every two seconds. More expensive cwd/listener
         // enrichment runs every ten seconds and is retained between samples.
-        let includeExternalDetails = externalProcesses.isEmpty || metricsSampleSequence.isMultiple(of: 5)
+        let includeExternalDetails = resources.externalProcesses.isEmpty || metricsSampleSequence.isMultiple(of: 5)
         let rootProcessIDs = Set(targets.values)
         metricsQueue.async { [weak self] in
             let sample = ProcessMetricsSampler.sample(
@@ -145,17 +178,19 @@ final class Supervisor: ObservableObject {
                     runtime.updateProcessMetrics(sample.managedByRoot[sampledPID])
                 }
                 if includeExternalDetails {
-                    self.externalProcesses = sample.externalProcesses
+                    self.resources.externalProcesses = sample.externalProcesses
                     self.refreshListeningPorts()
                 } else {
-                    let previousByPID = Dictionary(uniqueKeysWithValues: self.externalProcesses.map { ($0.pid, $0) })
-                    self.externalProcesses = sample.externalProcesses.map {
+                    let previous = self.resources.externalProcesses
+                    let previousByPID = Dictionary(previous.map { ($0.pid, $0) }, uniquingKeysWith: { first, _ in first })
+                    self.resources.externalProcesses = sample.externalProcesses.map {
                         $0.preservingDetails(from: previousByPID[$0.pid])
                     }
                 }
                 self.recordResourceHistory(samples: sample.managedByRoot, targets: targets)
                 self.evaluateMemoryLimits(samples: sample.managedByRoot, targets: targets)
-                self.bump()
+                // No `bump()`: a sample is not a state change. Each runtime
+                // publishes its own metrics, and `resources` its own history.
             }
         }
     }
@@ -188,12 +223,14 @@ final class Supervisor: ObservableObject {
             cpuPercent: samples.values.reduce(0) { $0 + $1.cpuPercent },
             processCount: samples.values.reduce(0) { $0 + $1.processCount }
         )
-        resourceHistory.append(point)
+        var history = resources.resourceHistory
+        history.append(point)
         // Five minutes at the two-second sampling interval is enough to reveal
         // runaway growth without turning the monitor into another memory sink.
-        if resourceHistory.count > 150 {
-            resourceHistory.removeFirst(resourceHistory.count - 150)
+        if history.count > 150 {
+            history.removeFirst(history.count - 150)
         }
+        resources.resourceHistory = history
 
         struct ProjectTotals {
             let name: String
@@ -214,7 +251,8 @@ final class Supervisor: ObservableObject {
             projectTotals[runtime.projectID] = total
         }
 
-        projectResourceHistory.append(contentsOf: projectTotals.map { projectID, total in
+        var projectHistory = resources.projectResourceHistory
+        projectHistory.append(contentsOf: projectTotals.map { projectID, total in
             ProjectResourceHistoryPoint(
                 timestamp: now,
                 projectID: projectID,
@@ -225,7 +263,8 @@ final class Supervisor: ObservableObject {
             )
         })
         let cutoff = now.addingTimeInterval(-300)
-        projectResourceHistory.removeAll { $0.timestamp < cutoff }
+        projectHistory.removeAll { $0.timestamp < cutoff }
+        resources.projectResourceHistory = projectHistory
     }
 
     private func evaluateMemoryLimits(
@@ -235,7 +274,10 @@ final class Supervisor: ObservableObject {
     ) {
         let projectIDs = Set(projects.map(\.id))
         memoryLimitGuard.removeProjects(except: projectIDs)
-        memoryLimitRestarts = memoryLimitRestarts.filter { projectIDs.contains($0.key) }
+        // Assigning a `@Published` value notifies even when nothing changed.
+        if memoryLimitRestarts.keys.contains(where: { !projectIDs.contains($0) }) {
+            memoryLimitRestarts = memoryLimitRestarts.filter { projectIDs.contains($0.key) }
+        }
 
         for project in projects {
             let running = runtimes(inProject: project.id).filter(\.isRunning)
@@ -420,6 +462,8 @@ final class Supervisor: ObservableObject {
             memoryLimitBytes: memoryLimitBytes
         )
         store.mutate { $0.projects.append(project) }
+        // A project nobody has touched yet would go straight to the older list.
+        StudioWorkspace.shared.touchProject(project.id)
         approveInClaudeCode(project.root)
         refresh()
         return project
@@ -561,6 +605,25 @@ final class Supervisor: ObservableObject {
     func server(configuredOn port: Int, excluding serverID: String? = nil) -> (project: Project, server: ServerConfig)? {
         for project in store.config.projects {
             if let server = project.servers.first(where: { $0.port == port && $0.id != serverID }) {
+                return (project, server)
+            }
+        }
+        return nil
+    }
+
+    /// The only configured-port clash worth refusing: a server that holds the
+    /// port *right now*. Two projects may share a configured port, because old
+    /// projects pile up and the one that last used 3000 months ago should not
+    /// keep it from everything since. Whoever starts second is handled where it
+    /// matters, at start: `ServerRuntime.spawn` moves to the next free port or
+    /// fails with the occupant's name.
+    func runningServer(configuredOn port: Int, excluding serverID: String? = nil) -> (project: Project, server: ServerConfig)? {
+        for project in store.config.projects {
+            for server in project.servers where server.id != serverID {
+                // The port it really took, which is not the configured one
+                // when it had to fall back to a free port at start.
+                guard let runtime = runtimes[server.id], runtime.isRunning,
+                      runtime.effectivePort == port else { continue }
                 return (project, server)
             }
         }

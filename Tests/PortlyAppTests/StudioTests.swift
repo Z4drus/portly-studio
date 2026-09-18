@@ -277,6 +277,15 @@ final class ClaudeTranscriptTests: XCTestCase {
         )
         XCTAssertEqual(ClaudeTranscripts.launchCommand(base: "codex", sessionID: "abc", hasTranscript: true), "codex")
         XCTAssertEqual(ClaudeTranscripts.launchCommand(base: base, sessionID: nil, hasTranscript: true), base)
+        XCTAssertEqual(
+            ClaudeTranscripts.launchCommand(base: base, sessionID: "abc", hasTranscript: true, resumeNote: "it's done"),
+            "\(base) --resume abc 'it'\\''s done'"
+        )
+        XCTAssertEqual(
+            ClaudeTranscripts.launchCommand(base: base, sessionID: "abc", hasTranscript: false, resumeNote: "ignored"),
+            "\(base) --session-id abc",
+            "a note only makes sense to a conversation that exists"
+        )
     }
 
     func testPaneConfigWithoutSessionIDStillDecodes() throws {
@@ -318,5 +327,24 @@ final class LoginEnvironmentStabilityTests: XCTestCase {
         XCTAssertEqual(URL(fileURLWithPath: stable).resolvingSymlinksInPath().path, installation.resolvingSymlinksInPath().path)
         XCTAssertFalse(stable.contains("fnm_multishells"))
         XCTAssertEqual(LoginEnvironment.stabilised("/usr/bin"), "/usr/bin")
+    }
+}
+
+final class ResumeNotesTests: XCTestCase {
+    func testANoteIsReadOnceAndLeavesTheOthersAlone() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("resume-notes-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try JSONEncoder().encode(["one": "carry on\nfrom step 3", "two": "other"]).write(to: url)
+
+        XCTAssertEqual(ResumeNotes.take(sessionID: "one", url: url), "carry on from step 3")
+        XCTAssertNil(ResumeNotes.take(sessionID: "one", url: url), "a note is delivered once")
+        XCTAssertEqual(ResumeNotes.take(sessionID: "two", url: url), "other")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path), "an emptied file is removed")
+        XCTAssertNil(ResumeNotes.take(sessionID: "missing", url: url))
+    }
+
+    func testNotesAreBoundedAndQuotedForTheShell() {
+        XCTAssertEqual(ResumeNotes.sanitized(String(repeating: "a", count: 5000)).count, ResumeNotes.maximumLength)
+        XCTAssertEqual(ResumeNotes.shellQuoted("$(rm -rf ~) `x` 'y'"), "'$(rm -rf ~) `x` '\\''y'\\'''")
     }
 }

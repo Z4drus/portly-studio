@@ -160,8 +160,8 @@ struct ProviderSnapshot: Identifiable, Equatable {
         switch status {
         case .needsAuth: return authPrompt
         case .accessDenied:
-            return "Portly was refused access to \(displayName)'s saved login. "
-                + "Click this ring to ask again, and choose Always Allow."
+            return "macOS did not hand over \(displayName)'s saved login. "
+                + "Click this ring to try again."
         case .unsupported(let why): return why
         case .error(let why): return "Couldn't read usage — \(why)"
         case .stale, .ok: return "Waiting for the first reading…"

@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import PortlyCore
+import SwiftTerm
 import SwiftUI
 
 /// Keyboard commands routed from the menu bar to whichever session is showing.
@@ -54,6 +55,8 @@ final class StudioWorkspace: ObservableObject {
     @Published private(set) var paneActivity: [String: PaneActivity] = [:]
     /// A sidebar double-click asked to rename this session inline.
     @Published var renameRequest: String?
+    /// The session's toolbar menu asked to rename it in the session bar.
+    @Published var sessionBarRenameRequest: String?
     private var reopenedAtLaunch = false
 
     private let store: StudioStore
@@ -68,6 +71,58 @@ final class StudioWorkspace: ObservableObject {
         config = store.config
         installKeyMonitor()
         startActivityTicker()
+    }
+
+    // MARK: - Project activity
+
+    /// Writes closer together than this are dropped: the sidebar asks about a
+    /// day, so a busy agent must not rewrite the config every second.
+    private static let activityResolution: TimeInterval = 5 * 60
+
+    /// When the project was last worked on, as far as Portly knows.
+    func lastActivity(forProject projectID: String) -> Date? {
+        config.projectActivity[projectID]
+    }
+
+    /// Record that the project is being worked on right now.
+    func touchProject(_ projectID: String, now: Date = Date()) {
+        if let previous = config.projectActivity[projectID],
+           now.timeIntervalSince(previous) < Self.activityResolution {
+            return
+        }
+        mutate { $0.projectActivity[projectID] = now }
+    }
+
+    /// The first launch with this feature knows nothing yet. Rather than hide
+    /// every project at once, read what the sessions themselves say: a Claude
+    /// conversation's transcript moves with every exchange. Called once the
+    /// projects are known; cheap enough (one `stat` per agent pane) to run at
+    /// every launch, which also catches work done while Portly was closed.
+    func seedProjectActivity(projects: [Project]) {
+        var seeded = config.projectActivity
+        let known = Set(projects.map(\.id))
+        seeded = seeded.filter { known.contains($0.key) }
+        for session in config.sessions {
+            guard let project = projects.first(where: { $0.id == session.projectID }) else { continue }
+            let root = NSString(string: project.root).expandingTildeInPath
+            let transcripts = session.panes.compactMap { pane in
+                pane.agentSessionID.flatMap { ClaudeTranscripts.lastModified(sessionID: $0, projectRoot: root) }
+            }
+            let latest = ([session.createdAt] + transcripts).max() ?? session.createdAt
+            if latest > (seeded[project.id] ?? .distantPast) { seeded[project.id] = latest }
+        }
+        guard seeded != config.projectActivity else { return }
+        mutate { $0.projectActivity = seeded }
+    }
+
+    /// Bring a project back from the older-projects list: it returns to the
+    /// sidebar, and a coding session opens on it. Its servers are listed but
+    /// left alone; starting one is still the user's call.
+    @discardableResult
+    func revealProject(_ projectID: String) -> TerminalSession {
+        touchProject(projectID)
+        let existing = sessions(for: projectID).max { $0.createdAt < $1.createdAt }
+        return existing ?? createSession(projectID: projectID)
     }
 
     // MARK: - Activity
@@ -96,6 +151,7 @@ final class StudioWorkspace: ObservableObject {
                 next[id] = state
                 changed = true
             }
+            if working { touchProject(runtime.projectID, now: now) }
         }
         for id in next.keys where paneRuntimes[id] == nil {
             next.removeValue(forKey: id)
@@ -132,8 +188,21 @@ final class StudioWorkspace: ObservableObject {
     func reopenSessionsAtLaunchIfNeeded() {
         guard !reopenedAtLaunch else { return }
         reopenedAtLaunch = true
+        seedProjectActivity(projects: Supervisor.shared.projects)
         guard config.reopenSessionsAtLaunch else { return }
+        // Only what the sidebar shows. A project put away in the older list
+        // keeps its sessions, and they respawn the moment one is opened; waking
+        // an agent per session of every project ever added is what made a
+        // launch slow once the list grew.
+        let now = Date()
         for session in config.sessions {
+            let recent = SidebarVisibility.isVisible(
+                hasRunningServer: false,
+                lastActivity: lastActivity(forProject: session.projectID),
+                isSelected: session.id == activeSessionID,
+                now: now
+            )
+            guard recent else { continue }
             for pane in session.panes {
                 let runtime = self.runtime(for: pane, in: session)
                 runtime.muteActivity(for: 20)
@@ -146,6 +215,10 @@ final class StudioWorkspace: ObservableObject {
     /// local monitor sees the key before the menu bar does.
     private func installKeyMonitor() {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            // Server terminals are plain `TerminalView`s and need this too.
+            if let terminal = event.window?.firstResponder as? TerminalView {
+                TerminalOptionKey.prepare(terminal, for: event)
+            }
             guard let view = event.window?.firstResponder as? StudioTerminalView else { return event }
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             if flags == [.command], event.charactersIgnoringModifiers == "w",
@@ -184,7 +257,10 @@ final class StudioWorkspace: ObservableObject {
             layout: .leaf(pane),
             focusedPaneID: pane.id
         )
-        mutate { $0.sessions.append(session) }
+        mutate {
+            $0.sessions.append(session)
+            $0.projectActivity[projectID] = Date()
+        }
         return session
     }
 
@@ -208,6 +284,9 @@ final class StudioWorkspace: ObservableObject {
             removeSession(session.id)
         }
         quickRuntimes.removeValue(forKey: projectID)?.terminate()
+        if config.projectActivity[projectID] != nil {
+            mutate { $0.projectActivity.removeValue(forKey: projectID) }
+        }
     }
 
     // MARK: - Panes
@@ -351,7 +430,12 @@ final class StudioWorkspace: ObservableObject {
         guard let base = pane.launchCommand else { return nil }
         guard let sessionID = pane.agentSessionID else { return base }
         let hasTranscript = ClaudeTranscripts.transcriptExists(sessionID: sessionID, projectRoot: projectRoot)
-        return ClaudeTranscripts.launchCommand(base: base, sessionID: sessionID, hasTranscript: hasTranscript)
+        return ClaudeTranscripts.launchCommand(
+            base: base,
+            sessionID: sessionID,
+            hasTranscript: hasTranscript,
+            resumeNote: hasTranscript ? ResumeNotes.take(sessionID: sessionID) : nil
+        )
     }
 
     /// Start over in one pane: a fresh shell, and a fresh conversation id.

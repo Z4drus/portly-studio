@@ -171,8 +171,10 @@ actor ClaudeUsageProvider: UsageProvider {
 
     private static let usagePage = URL(string: "https://claude.ai/settings/usage")
 
+    /// From what the last fetch already read. Settings asks on the main
+    /// thread, and a keychain read is a subprocess: it must not wait on one.
     nonisolated func account() -> ProviderAccount? {
-        guard let credentials = try? keychain.load() else { return nil }
+        guard let credentials = keychain.held() else { return nil }
         return ProviderAccount(
             label: nil,
             plan: credentials.subscriptionType,

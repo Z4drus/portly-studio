@@ -84,6 +84,13 @@ final class CredentialCache<Credential>: @unchecked Sendable {
         }
     }
 
+    /// The credential as last read, with no attempt to refresh it.
+    var held: Credential? {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+
     /// Drop what is held, so the next read goes to the keychain for real.
     func forget() {
         lock.lock()

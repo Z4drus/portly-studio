@@ -65,12 +65,37 @@ enum SidebarSearchMatch: Equatable {
     case server(String)
 }
 
-struct SidebarSearchField: View {
+struct SidebarSearchField<Leading: View>: View {
     @Binding var text: String
     var focused: FocusState<Bool>.Binding
     var onSubmit: () -> Void
+    /// Sits to the left of the field, outside its rounded background.
+    var leading: Leading
 
     var body: some View {
+        HStack(spacing: 6) {
+            leading
+            field
+        }
+        .padding(.horizontal, 10)
+        .padding(.top, 8)
+        .padding(.bottom, 6)
+        .background(.bar)
+    }
+
+    init(
+        text: Binding<String>,
+        focused: FocusState<Bool>.Binding,
+        onSubmit: @escaping () -> Void,
+        @ViewBuilder leading: () -> Leading
+    ) {
+        _text = text
+        self.focused = focused
+        self.onSubmit = onSubmit
+        self.leading = leading()
+    }
+
+    private var field: some View {
         HStack(spacing: 6) {
             NucleoIconView(.search, size: 13)
                 .foregroundStyle(.secondary)
@@ -98,7 +123,7 @@ struct SidebarSearchField: View {
             }
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 6)
+        .frame(height: 28)
         .background {
             RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .fill(Color.primary.opacity(0.055))
@@ -110,10 +135,13 @@ struct SidebarSearchField: View {
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
         }
-        .padding(.horizontal, 10)
-        .padding(.top, 8)
-        .padding(.bottom, 6)
-        .background(.bar)
         .help("Filter the sidebar by project, server, or port")
+    }
+}
+
+extension SidebarSearchField where Leading == EmptyView {
+    /// The field on its own, with nothing beside it.
+    init(text: Binding<String>, focused: FocusState<Bool>.Binding, onSubmit: @escaping () -> Void) {
+        self.init(text: text, focused: focused, onSubmit: onSubmit) { EmptyView() }
     }
 }

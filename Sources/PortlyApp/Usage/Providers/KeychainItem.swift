@@ -21,6 +21,9 @@ enum KeychainItem {
         /// Opaque to everything but `SecItemCopyMatching`. Reading the item
         /// this points at is the one call that can prompt.
         let persistentRef: Data
+        /// The account the item is filed under, which is what tells several
+        /// items under one service apart on the `security` command line.
+        var account: String?
     }
 
     /// The most recently modified item under a service, or nil if there is
@@ -51,7 +54,11 @@ enum KeychainItem {
         items
             .compactMap { item -> Match? in
                 guard let ref = item[kSecValuePersistentRef] as? Data else { return nil }
-                return Match(modifiedAt: item[kSecAttrModificationDate] as? Date, persistentRef: ref)
+                return Match(
+                    modifiedAt: item[kSecAttrModificationDate] as? Date,
+                    persistentRef: ref,
+                    account: item[kSecAttrAccount] as? String
+                )
             }
             .max { ($0.modifiedAt ?? .distantPast) < ($1.modifiedAt ?? .distantPast) }
     }

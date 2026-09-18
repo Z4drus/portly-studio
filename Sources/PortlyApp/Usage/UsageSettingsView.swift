@@ -30,7 +30,7 @@ struct UsageSettingsView: View {
                         retry: { center.refresh(providerID: provider.id) }
                     )
                 }
-                Text("Portly never signs in anywhere. Each reading is borrowed from the tool that already holds the account: Claude Code's keychain token, Cursor's editor session, Codex's and Grok's local sign-in. Switching one off stops its credential being read and forgets its readings; it does not sign you out of that tool. macOS asks once before Claude Code's token can be read — choose Always Allow so it stays quiet.")
+                Text("Portly never signs in anywhere. Each reading is borrowed from the tool that already holds the account: Claude Code's keychain token, Cursor's editor session, Codex's and Grok's local sign-in. Switching one off stops its credential being read and forgets its readings; it does not sign you out of that tool. Claude Code's token is read the way Claude Code reads it, through macOS's own security tool, so macOS never has to ask.")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -112,6 +112,8 @@ struct UsageSettingsView: View {
         .onReceive(Timer.publish(every: 30, on: .main, in: .common).autoconnect()) { now = $0 }
         .onChange(of: preferences.enabledProviders) { reload() }
         .onChange(of: store.refusedAccess) { reload() }
+        // The account line comes from what the last fetch read.
+        .onChange(of: store.lastRefreshedAt) { reload() }
     }
 
     private func reload() {
@@ -150,8 +152,7 @@ private struct ProviderAccountRow: View {
     let provider: ProviderSummary
     let isEnabled: Bool
     let setEnabled: (Bool) -> Void
-    /// Re-reads the credential. For a declined keychain prompt that is the
-    /// whole remedy: asking again is what puts the prompt back on screen.
+    /// Re-reads the credential, dropping whatever was held.
     let retry: () -> Void
 
     var body: some View {
@@ -166,9 +167,9 @@ private struct ProviderAccountRow: View {
                 Spacer(minLength: 8)
 
                 if isEnabled, provider.wasRefusedAccess {
-                    Button("Allow access…", action: retry)
+                    Button("Try Again", action: retry)
                         .controlSize(.small)
-                        .help("Asks macOS for \(provider.name)'s saved login again. Choose Always Allow and it will stop asking.")
+                        .help("Reads \(provider.name)'s saved login again.")
                 }
 
                 if isEnabled, let destination {
@@ -208,7 +209,7 @@ private struct ProviderAccountRow: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         } else if provider.wasRefusedAccess {
-            Text("macOS is not letting Portly read \(provider.name)'s saved login. Choose Allow access… above, then Always Allow.")
+            Text("macOS did not hand over \(provider.name)'s saved login. Unlock the login keychain if it is locked, then choose Try Again.")
                 .foregroundStyle(.orange)
                 .fixedSize(horizontal: false, vertical: true)
         } else {
