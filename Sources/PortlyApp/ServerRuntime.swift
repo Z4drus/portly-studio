@@ -394,9 +394,11 @@ final class ServerRuntime: NSObject, ObservableObject, LocalProcessDelegate, Ter
         let proc = LocalProcess(delegate: self)
         process = proc
 
-        let command = portFallback.map {
+        let configured = portFallback.map {
             Self.rewritingPort(in: config.command, from: $0.requestedPort, to: $0.usedPort)
         } ?? config.command
+        // `PORT` is exported below; tools that ignore it get the flag instead.
+        let command = PortArgument.launchCommand(for: configured, port: effectivePort, directory: dir)
         logs.note("starting: \(command)  (cwd: \(dir))")
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }

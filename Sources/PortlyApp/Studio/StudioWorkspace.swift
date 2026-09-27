@@ -58,6 +58,9 @@ final class StudioWorkspace: ObservableObject {
     /// The session's toolbar menu asked to rename it in the session bar.
     @Published var sessionBarRenameRequest: String?
     private var reopenedAtLaunch = false
+    private var preparedSidebar = false
+    /// Seconds until the next idle-project sweep, counted by the activity ticker.
+    private var autoArchiveCountdown = 60
 
     private let store: StudioStore
     private var paneRuntimes: [String: TerminalPaneRuntime] = [:]
@@ -93,34 +96,166 @@ final class StudioWorkspace: ObservableObject {
         mutate { $0.projectActivity[projectID] = now }
     }
 
-    /// The first launch with this feature knows nothing yet. Rather than hide
-    /// every project at once, read what the sessions themselves say: a Claude
-    /// conversation's transcript moves with every exchange. Called once the
-    /// projects are known; cheap enough (one `stat` per agent pane) to run at
-    /// every launch, which also catches work done while Portly was closed.
-    func seedProjectActivity(projects: [Project]) {
-        var seeded = config.projectActivity
+    /// Once per launch, before the sidebar is drawn: bring the activity dates
+    /// up to date with what the Claude conversations say, forget projects that
+    /// no longer exist, and archive the ones idle for too long.
+    ///
+    /// Configurations written before version 2 dated projects by their
+    /// transcripts' modification times, which Claude Code moves on every
+    /// resume, so those dates are replaced rather than trusted.
+    func prepareSidebarAtLaunch(projects: [Project]) {
+        // No projects most likely means a config that could not be read; the
+        // archive and the order must survive until it can.
+        guard !preparedSidebar, !projects.isEmpty else { return }
+        preparedSidebar = true
+        let exchanges = lastExchanges(projects: projects)
         let known = Set(projects.map(\.id))
-        seeded = seeded.filter { known.contains($0.key) }
+        mutate { config in
+            config.projectActivity = config.projectActivity.filter { known.contains($0.key) }
+            config.archivedProjects.formIntersection(known)
+            if config.version < StudioConfig.currentVersion {
+                for (projectID, date) in exchanges { config.projectActivity[projectID] = date }
+                config.version = StudioConfig.currentVersion
+            } else {
+                for (projectID, date) in exchanges where date > (config.projectActivity[projectID] ?? .distantPast) {
+                    config.projectActivity[projectID] = date
+                }
+            }
+            config.projectOrder = SidebarVisibility.complete(config.projectOrder, projects: projects)
+        }
+        autoArchiveIdleProjects()
+    }
+
+    /// The last real exchange in each project's Claude conversations, or the
+    /// session's creation when it never had one. One short tail read per agent
+    /// pane, which also catches work done while Portly was closed.
+    private func lastExchanges(projects: [Project]) -> [String: Date] {
+        var latest: [String: Date] = [:]
         for session in config.sessions {
             guard let project = projects.first(where: { $0.id == session.projectID }) else { continue }
             let root = NSString(string: project.root).expandingTildeInPath
-            let transcripts = session.panes.compactMap { pane in
-                pane.agentSessionID.flatMap { ClaudeTranscripts.lastModified(sessionID: $0, projectRoot: root) }
+            let exchanges = session.panes.compactMap { pane in
+                pane.agentSessionID.flatMap { ClaudeTranscripts.lastExchange(sessionID: $0, projectRoot: root) }
             }
-            let latest = ([session.createdAt] + transcripts).max() ?? session.createdAt
-            if latest > (seeded[project.id] ?? .distantPast) { seeded[project.id] = latest }
+            let date = ([session.createdAt] + exchanges).max() ?? session.createdAt
+            if date > (latest[project.id] ?? .distantPast) { latest[project.id] = date }
         }
-        guard seeded != config.projectActivity else { return }
-        mutate { $0.projectActivity = seeded }
+        return latest
     }
 
-    /// Bring a project back from the older-projects list: it returns to the
+    // MARK: - Sidebar order and archive
+
+    func isArchived(_ projectID: String) -> Bool {
+        config.archivedProjects.contains(projectID)
+    }
+
+    /// The projects the sidebar lists, in its order.
+    func sidebarProjects(_ projects: [Project]) -> [Project] {
+        SidebarVisibility.ordered(projects, order: config.projectOrder)
+            .filter { !config.archivedProjects.contains($0.id) }
+    }
+
+    /// The projects waiting in the archive.
+    func archivedProjects(_ projects: [Project]) -> [Project] {
+        projects.filter { config.archivedProjects.contains($0.id) }
+    }
+
+    /// Put a project away. Its sessions and servers are left as they are.
+    func archiveProject(_ projectID: String) {
+        guard !isArchived(projectID) else { return }
+        mutate { $0.archivedProjects.insert(projectID) }
+        if activeProjectID == projectID { quickTerminalVisible = false }
+        if envPanelProjectID == projectID { envPanelProjectID = nil }
+    }
+
+    /// Back in the sidebar, at the top where it will be seen.
+    func unarchiveProject(_ projectID: String) {
+        let projects = Supervisor.shared.projects
+        mutate {
+            $0.archivedProjects.remove(projectID)
+            $0.projectOrder = SidebarVisibility.movingToTop(projectID, in: $0.projectOrder, projects: projects)
+        }
+        touchProject(projectID)
+    }
+
+    func moveProjectToTop(_ projectID: String) {
+        let projects = Supervisor.shared.projects
+        let next = SidebarVisibility.movingToTop(projectID, in: config.projectOrder, projects: projects)
+        guard next != config.projectOrder else { return }
+        mutate { $0.projectOrder = next }
+    }
+
+    /// A dragged project takes the place of the one it passes over.
+    func moveProject(_ projectID: String, onto targetID: String) {
+        let projects = Supervisor.shared.projects
+        let next = SidebarVisibility.moving(projectID, onto: targetID, in: config.projectOrder, projects: projects)
+        guard next != config.projectOrder else { return }
+        mutate { $0.projectOrder = next }
+    }
+
+    /// One step up (-1) or down (+1) among the projects the sidebar shows.
+    func moveProject(_ projectID: String, by offset: Int, among visible: [String]) {
+        let projects = Supervisor.shared.projects
+        let next = SidebarVisibility.moving(projectID, by: offset, among: visible, in: config.projectOrder, projects: projects)
+        guard next != config.projectOrder else { return }
+        mutate { $0.projectOrder = next }
+    }
+
+    /// A server just started, by hand or on its own: its project comes back
+    /// from the archive if it was there, and goes to the top of the sidebar,
+    /// where it stays after the server stops.
+    func projectServerStarted(_ projectID: String) {
+        if isArchived(projectID) {
+            unarchiveProject(projectID)
+        } else {
+            moveProjectToTop(projectID)
+        }
+    }
+
+    func setAutoArchiveDays(_ days: Int) {
+        mutate { $0.autoArchiveDays = max(0, days) }
+        autoArchiveIdleProjects()
+    }
+
+    /// Archive every project idle for longer than the setting allows.
+    func autoArchiveIdleProjects(now: Date = Date()) {
+        let days = config.autoArchiveDays
+        guard days > 0 else { return }
+        let supervisor = Supervisor.shared
+        let running = Set(supervisor.runtimes.values.filter(\.isRunning).map(\.projectID))
+        let idle = supervisor.projects
+            .filter { project in
+                !config.archivedProjects.contains(project.id)
+                    && SidebarVisibility.shouldAutoArchive(
+                        lastActivity: config.projectActivity[project.id],
+                        hasRunningServer: running.contains(project.id),
+                        isWorking: isWorking(projectID: project.id, now: now),
+                        isSelected: activeProjectID == project.id,
+                        afterDays: days,
+                        now: now
+                    )
+            }
+            .map(\.id)
+        guard !idle.isEmpty else { return }
+        mutate { $0.archivedProjects.formUnion(idle) }
+    }
+
+    private func isWorking(projectID: String, now: Date) -> Bool {
+        paneRuntimes.values.contains {
+            $0.projectID == projectID && $0.isProducingOutput(within: KeepAwake.workingWindow, now: now)
+        }
+    }
+
+    /// Bring a project back from the archive: it returns to the top of the
     /// sidebar, and a coding session opens on it. Its servers are listed but
     /// left alone; starting one is still the user's call.
     @discardableResult
     func revealProject(_ projectID: String) -> TerminalSession {
-        touchProject(projectID)
+        if isArchived(projectID) {
+            unarchiveProject(projectID)
+        } else {
+            touchProject(projectID)
+        }
         let existing = sessions(for: projectID).max { $0.createdAt < $1.createdAt }
         return existing ?? createSession(projectID: projectID)
     }
@@ -158,6 +293,11 @@ final class StudioWorkspace: ObservableObject {
             changed = true
         }
         if changed { paneActivity = next }
+        autoArchiveCountdown -= 1
+        if autoArchiveCountdown <= 0 {
+            autoArchiveCountdown = 60
+            if preparedSidebar { autoArchiveIdleProjects(now: now) }
+        }
     }
 
     private func isOnScreen(paneID: String) -> Bool {
@@ -178,8 +318,12 @@ final class StudioWorkspace: ObservableObject {
     }
 
     /// Panes (sessions and quick terminals) with output in the last few seconds.
-    func workingPaneCount(now: Date = Date()) -> Int {
-        let all = Array(paneRuntimes.values) + Array(quickRuntimes.values)
+    /// `agentsOnly` leaves out shells and quick terminals, whose output can
+    /// be a log that never stops.
+    func workingPaneCount(now: Date = Date(), agentsOnly: Bool = false) -> Int {
+        let all = agentsOnly
+            ? paneRuntimes.values.filter { $0.kind == .agent }
+            : Array(paneRuntimes.values) + Array(quickRuntimes.values)
         return all.filter { $0.isProducingOutput(within: KeepAwake.workingWindow, now: now) }.count
     }
 
@@ -188,21 +332,14 @@ final class StudioWorkspace: ObservableObject {
     func reopenSessionsAtLaunchIfNeeded() {
         guard !reopenedAtLaunch else { return }
         reopenedAtLaunch = true
-        seedProjectActivity(projects: Supervisor.shared.projects)
+        prepareSidebarAtLaunch(projects: Supervisor.shared.projects)
         guard config.reopenSessionsAtLaunch else { return }
-        // Only what the sidebar shows. A project put away in the older list
-        // keeps its sessions, and they respawn the moment one is opened; waking
-        // an agent per session of every project ever added is what made a
-        // launch slow once the list grew.
-        let now = Date()
+        // Only what the sidebar shows. An archived project keeps its sessions,
+        // and they respawn the moment one is opened; waking an agent per
+        // session of every project ever added is what made a launch slow once
+        // the list grew.
         for session in config.sessions {
-            let recent = SidebarVisibility.isVisible(
-                hasRunningServer: false,
-                lastActivity: lastActivity(forProject: session.projectID),
-                isSelected: session.id == activeSessionID,
-                now: now
-            )
-            guard recent else { continue }
+            guard !isArchived(session.projectID) || session.id == activeSessionID else { continue }
             for pane in session.panes {
                 let runtime = self.runtime(for: pane, in: session)
                 runtime.muteActivity(for: 20)
@@ -284,8 +421,10 @@ final class StudioWorkspace: ObservableObject {
             removeSession(session.id)
         }
         quickRuntimes.removeValue(forKey: projectID)?.terminate()
-        if config.projectActivity[projectID] != nil {
-            mutate { $0.projectActivity.removeValue(forKey: projectID) }
+        mutate {
+            $0.projectActivity.removeValue(forKey: projectID)
+            $0.archivedProjects.remove(projectID)
+            $0.projectOrder.removeAll { $0 == projectID }
         }
     }
 

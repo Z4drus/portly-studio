@@ -2,15 +2,20 @@ import PortlyCore
 import SwiftUI
 
 /// The button beside the sidebar search, and the list it opens: every project,
-/// the ones put away first, searchable by name. Picking one brings it back to
+/// the archived ones first, searchable by name. Picking one brings it back to
 /// the sidebar and opens a coding session on it.
-struct OlderProjectsButton: View {
-    /// Projects the sidebar is not showing right now.
-    let hidden: [Project]
-    /// Projects it is showing, offered below the others so one list finds all.
+struct ArchivedProjectsButton: View {
+    /// Projects in the archive.
+    let archived: [Project]
+    /// Projects in the sidebar, offered below the others so one list finds all.
     let listed: [Project]
     let lastActivity: (String) -> Date?
-    let onPick: (Project) -> Void
+    let isRunning: (Project) -> Bool
+    /// Bring back and open a session.
+    let onOpen: (Project) -> Void
+    /// Bring back to the sidebar without opening anything.
+    let onRestore: (Project) -> Void
+    let onArchive: (Project) -> Void
 
     @State private var showing = false
     @State private var hovering = false
@@ -19,8 +24,8 @@ struct OlderProjectsButton: View {
         Button {
             showing.toggle()
         } label: {
-            NucleoIconView(.history, size: 13)
-                .foregroundStyle(hidden.isEmpty ? Color.secondary : Color.primary.opacity(0.8))
+            NucleoIconView(.archive, size: 13)
+                .foregroundStyle(archived.isEmpty ? Color.secondary : Color.primary.opacity(0.8))
                 .frame(width: 28, height: 28)
                 .background {
                     // Same radius and fill as the search field it sits beside.
@@ -28,8 +33,8 @@ struct OlderProjectsButton: View {
                         .fill(Color.primary.opacity(hovering || showing ? 0.1 : 0.055))
                 }
                 .overlay(alignment: .topTrailing) {
-                    if !hidden.isEmpty {
-                        Text("\(hidden.count)")
+                    if !archived.isEmpty {
+                        Text("\(archived.count)")
                             .font(.system(size: 8.5, weight: .bold, design: .rounded))
                             .monospacedDigit()
                             .foregroundStyle(.white)
@@ -46,40 +51,70 @@ struct OlderProjectsButton: View {
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .animation(Motion.hover, value: hovering)
-        .animation(Motion.state, value: hidden.count)
-        .help(hidden.isEmpty
-            ? "All projects are in the sidebar. Projects untouched for a day move here."
-            : "\(hidden.count) older project\(hidden.count == 1 ? "" : "s"): no server running and nothing done in the last day")
-        .accessibilityLabel("Older projects")
-        .accessibilityValue("\(hidden.count) hidden")
+        .animation(Motion.state, value: archived.count)
+        .help(archived.isEmpty
+            ? "Archived projects. Right-click a project in the sidebar to archive it."
+            : "\(archived.count) archived project\(archived.count == 1 ? "" : "s")")
+        .accessibilityLabel("Archived projects")
+        .accessibilityValue("\(archived.count) archived")
         .popover(isPresented: $showing, arrowEdge: .bottom) {
-            OlderProjectsList(hidden: hidden, listed: listed, lastActivity: lastActivity) { project in
-                showing = false
-                onPick(project)
-            }
+            ArchivedProjectsList(
+                archived: archived,
+                listed: listed,
+                lastActivity: lastActivity,
+                isRunning: isRunning,
+                onOpen: { project in
+                    showing = false
+                    onOpen(project)
+                },
+                onRestore: onRestore,
+                onArchive: onArchive
+            )
         }
     }
 }
 
-private struct OlderProjectsList: View {
-    let hidden: [Project]
+private struct ArchivedProjectsList: View {
+    let archived: [Project]
     let listed: [Project]
     let lastActivity: (String) -> Date?
-    let onPick: (Project) -> Void
+    let isRunning: (Project) -> Bool
+    let onOpen: (Project) -> Void
+    let onRestore: (Project) -> Void
+    let onArchive: (Project) -> Void
 
     @State private var query = ""
     @State private var highlighted: String?
     @FocusState private var searchFocused: Bool
 
-    private var hiddenMatches: [Project] {
-        SidebarVisibility.search(hidden, query: query, lastActivity: lastActivity)
+    private static let rowHeight: CGFloat = 38
+    private static let rowSpacing: CGFloat = 1
+    private static let sectionHeaderHeight: CGFloat = 22
+    private static let listPadding: CGFloat = 6
+    private static let minimumListHeight: CGFloat = 150
+    private static let maximumListHeight: CGFloat = 380
+
+    private var archivedMatches: [Project] {
+        SidebarVisibility.search(archived, query: query, lastActivity: lastActivity)
     }
 
     private var listedMatches: [Project] {
         SidebarVisibility.search(listed, query: query, lastActivity: lastActivity)
     }
 
-    private var ordered: [Project] { hiddenMatches + listedMatches }
+    private var ordered: [Project] { archivedMatches + listedMatches }
+
+    /// Sized from every project, not from the current matches: the popover
+    /// keeps its height while you type, and a search that found nothing
+    /// cannot leave it shrunken the next time it opens.
+    private var listHeight: CGFloat {
+        let sections = [archived, listed].filter { !$0.isEmpty }.count
+        let rows = archived.count + listed.count
+        let content = Self.listPadding * 2
+            + CGFloat(sections) * Self.sectionHeaderHeight
+            + CGFloat(rows) * (Self.rowHeight + Self.rowSpacing)
+        return min(max(content, Self.minimumListHeight), Self.maximumListHeight)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -90,7 +125,7 @@ private struct OlderProjectsList: View {
                 TextField("Find a project", text: $query)
                     .textFieldStyle(.plain)
                     .focused($searchFocused)
-                    .onSubmit(pickHighlighted)
+                    .onSubmit(openHighlighted)
                     .accessibilityLabel("Find a project by name")
             }
             .padding(.horizontal, 10)
@@ -98,32 +133,23 @@ private struct OlderProjectsList: View {
 
             Divider()
 
-            if ordered.isEmpty {
-                VStack(spacing: 6) {
-                    NucleoIconView(.search, size: 20)
-                        .foregroundStyle(.tertiary)
-                    Text(query.isEmpty ? "No projects yet" : "No project named “\(query)”")
-                        .font(PortlyTypography.body)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 28)
-            } else {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 1) {
-                            section("Older", projects: hiddenMatches)
-                            section("In the sidebar", projects: listedMatches)
-                        }
-                        .padding(6)
-                    }
-                    .frame(maxHeight: 360)
-                    .onChange(of: highlighted) {
-                        guard let highlighted else { return }
-                        proxy.scrollTo(highlighted)
-                    }
+            Group {
+                if ordered.isEmpty {
+                    emptyState
+                } else {
+                    list
                 }
             }
+            .frame(height: listHeight)
+
+            Divider()
+
+            Text("Right-click a project to archive it or bring it back.")
+                .font(PortlyTypography.metadata)
+                .foregroundStyle(.tertiary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12)
+                .frame(height: 26)
         }
         .frame(width: 320)
         .onAppear {
@@ -135,25 +161,61 @@ private struct OlderProjectsList: View {
         .onKeyPress(.upArrow) { move(-1); return .handled }
     }
 
+    private var emptyState: some View {
+        VStack(spacing: 6) {
+            NucleoIconView(.search, size: 20)
+                .foregroundStyle(.tertiary)
+            Text(query.isEmpty ? "No projects yet" : "No project named “\(query)”")
+                .font(PortlyTypography.body)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var list: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: Self.rowSpacing) {
+                    section("Archived", projects: archivedMatches, isArchived: true)
+                    section("In the sidebar", projects: listedMatches, isArchived: false)
+                }
+                .padding(Self.listPadding)
+            }
+            .onChange(of: highlighted) {
+                guard let highlighted else { return }
+                proxy.scrollTo(highlighted)
+            }
+        }
+    }
+
     @ViewBuilder
-    private func section(_ title: String, projects: [Project]) -> some View {
+    private func section(_ title: String, projects: [Project], isArchived: Bool) -> some View {
         if !projects.isEmpty {
             Text(title.uppercased())
                 .font(PortlyTypography.label)
                 .foregroundStyle(.tertiary)
                 .padding(.horizontal, 8)
-                .padding(.top, 6)
-                .padding(.bottom, 2)
+                .frame(height: Self.sectionHeaderHeight, alignment: .bottomLeading)
             ForEach(projects) { project in
-                OlderProjectRow(
+                ArchivedProjectRow(
                     project: project,
                     lastActivity: lastActivity(project.id),
-                    isHighlighted: highlighted == project.id
+                    isRunning: isRunning(project),
+                    isHighlighted: highlighted == project.id,
+                    height: Self.rowHeight
                 ) {
-                    onPick(project)
+                    onOpen(project)
                 }
                 .id(project.id)
                 .onHover { if $0 { highlighted = project.id } }
+                .contextMenu {
+                    Button("Open Coding Session") { onOpen(project) }
+                    if isArchived {
+                        Button("Bring Back to Sidebar") { onRestore(project) }
+                    } else {
+                        Button("Archive Project") { onArchive(project) }
+                    }
+                }
             }
         }
     }
@@ -165,16 +227,18 @@ private struct OlderProjectsList: View {
         highlighted = ids[min(max(current + offset, 0), ids.count - 1)]
     }
 
-    private func pickHighlighted() {
+    private func openHighlighted() {
         guard let project = ordered.first(where: { $0.id == highlighted }) ?? ordered.first else { return }
-        onPick(project)
+        onOpen(project)
     }
 }
 
-private struct OlderProjectRow: View {
+private struct ArchivedProjectRow: View {
     let project: Project
     let lastActivity: Date?
+    let isRunning: Bool
     let isHighlighted: Bool
+    let height: CGFloat
     let action: () -> Void
 
     private static let relative: RelativeDateTimeFormatter = {
@@ -210,6 +274,13 @@ private struct OlderProjectRow: View {
                         .lineLimit(1)
                 }
                 Spacer(minLength: 6)
+                if isRunning {
+                    Circle()
+                        .fill(ServerState.running.color)
+                        .frame(width: 6, height: 6)
+                        .help("A server is running")
+                        .accessibilityLabel("Server running")
+                }
                 if isHighlighted {
                     NucleoIconView(.returnKey, size: 10)
                         .foregroundStyle(.tertiary)
@@ -217,7 +288,7 @@ private struct OlderProjectRow: View {
                 }
             }
             .padding(.horizontal, 8)
-            .frame(height: 38)
+            .frame(height: height)
             .background {
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
                     .fill(Color.accentColor.opacity(isHighlighted ? 0.14 : 0))

@@ -264,15 +264,30 @@ struct StudioConfig: Codable {
     var sessions: [TerminalSession]
     /// When each project was last worked on: a session opened or an agent busy
     /// in it, a server started or stopped, the project added or brought back
-    /// from the older-projects list. The sidebar only lists recent ones.
+    /// from the archive, a real exchange in one of its Claude conversations.
     var projectActivity: [String: Date]
+    /// Projects put away behind the archive button beside the sidebar search.
+    /// Explicit state: a project stays archived until it is brought back, or
+    /// until one of its servers starts, whatever its activity dates say.
+    var archivedProjects: Set<String>
+    /// The sidebar order, top first. Projects missing from it follow in
+    /// configuration order.
+    var projectOrder: [String]
+    /// Days without activity before a project archives itself; 0 means never.
+    var autoArchiveDays: Int
+
+    /// Version 2 rebuilt the activity dates from real exchanges and made the
+    /// archive an explicit list.
+    static let currentVersion = 2
+    static let defaultAutoArchiveDays = 1
+    static let autoArchiveChoices = [0, 1, 3, 7, 30]
 
     static let defaultFontSize: Double = 13
     static let minimumFontSize: Double = 9
     static let maximumFontSize: Double = 28
 
     init(
-        version: Int = 1,
+        version: Int = StudioConfig.currentVersion,
         defaultAgent: AgentPreset = .claudeBypass,
         customAgentCommand: String = "",
         launchAgentInNewPanes: Bool = true,
@@ -283,7 +298,10 @@ struct StudioConfig: Codable {
         reopenSessionsAtLaunch: Bool = true,
         trustNewProjectsInClaudeCode: Bool = true,
         sessions: [TerminalSession] = [],
-        projectActivity: [String: Date] = [:]
+        projectActivity: [String: Date] = [:],
+        archivedProjects: Set<String> = [],
+        projectOrder: [String] = [],
+        autoArchiveDays: Int = StudioConfig.defaultAutoArchiveDays
     ) {
         self.version = version
         self.defaultAgent = defaultAgent
@@ -297,6 +315,9 @@ struct StudioConfig: Codable {
         self.trustNewProjectsInClaudeCode = trustNewProjectsInClaudeCode
         self.sessions = sessions
         self.projectActivity = projectActivity
+        self.archivedProjects = archivedProjects
+        self.projectOrder = projectOrder
+        self.autoArchiveDays = autoArchiveDays
     }
 
     init(from decoder: Decoder) throws {
@@ -313,6 +334,9 @@ struct StudioConfig: Codable {
         trustNewProjectsInClaudeCode = try c.decodeIfPresent(Bool.self, forKey: .trustNewProjectsInClaudeCode) ?? true
         sessions = try c.decodeIfPresent([TerminalSession].self, forKey: .sessions) ?? []
         projectActivity = try c.decodeIfPresent([String: Date].self, forKey: .projectActivity) ?? [:]
+        archivedProjects = try c.decodeIfPresent(Set<String>.self, forKey: .archivedProjects) ?? []
+        projectOrder = try c.decodeIfPresent([String].self, forKey: .projectOrder) ?? []
+        autoArchiveDays = try c.decodeIfPresent(Int.self, forKey: .autoArchiveDays) ?? StudioConfig.defaultAutoArchiveDays
     }
 
     /// The command a new agent pane types, or nil for a bare shell.
@@ -405,15 +429,57 @@ enum ClaudeTranscripts {
         }
     }
 
-    /// When the conversation was last written to, which is the most honest
-    /// "last worked on" a session has: it moves with every exchange, inside
-    /// Portly or out of it.
-    static func lastModified(sessionID: String, projectRoot: String) -> Date? {
+    /// When somebody last spoke in the conversation: the timestamp of its
+    /// latest user or assistant entry, inside Portly or out of it.
+    ///
+    /// Not the file's modification date. Claude Code appends bookkeeping
+    /// (`cost-state` and friends) every time a conversation is resumed or
+    /// closed, so the date moved at every launch of Portly, which put every
+    /// project back in the sidebar and respawned it, which moved it again.
+    static func lastExchange(sessionID: String, projectRoot: String) -> Date? {
         let url = projectsDirectory
             .appendingPathComponent(encodedDirectoryName(forProjectRoot: projectRoot), isDirectory: true)
             .appendingPathComponent("\(sessionID).jsonl")
-        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
-        return attributes?[.modificationDate] as? Date
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        guard let size = try? handle.seekToEnd() else { return nil }
+        // The bookkeeping after the last exchange grows with every resume
+        // (tens of kilobytes after a few weeks); read further back only when
+        // it, or a huge tool result, pushed the exchange out of the window.
+        for window in [UInt64(128 * 1024), UInt64(1024 * 1024), UInt64(8 * 1024 * 1024)] {
+            let start = size > window ? size - window : 0
+            guard (try? handle.seek(toOffset: start)) != nil,
+                  let data = try? handle.readToEnd() else { return nil }
+            if let date = lastExchange(inTail: data, isWholeFile: start == 0) { return date }
+            if start == 0 { return nil }
+        }
+        return nil
+    }
+
+    /// The newest user or assistant timestamp in the tail of a transcript.
+    /// The first line of a tail read mid-file is partial and skipped.
+    static func lastExchange(inTail data: Data, isWholeFile: Bool) -> Date? {
+        var lines = data.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: true)
+        if !isWholeFile, !lines.isEmpty { lines.removeFirst() }
+        let markers = [Data(#""type":"user""#.utf8), Data(#""type":"assistant""#.utf8)]
+        for line in lines.reversed() {
+            guard markers.contains(where: { line.range(of: $0) != nil }),
+                  let object = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
+                  let type = object["type"] as? String, type == "user" || type == "assistant",
+                  let stamp = object["timestamp"] as? String,
+                  let date = parseTimestamp(stamp)
+            else { continue }
+            return date
+        }
+        return nil
+    }
+
+    /// `2026-09-16T13:56:03.633Z`, with or without the fraction.
+    static func parseTimestamp(_ text: String) -> Date? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractional.date(from: text) { return date }
+        return ISO8601DateFormatter().date(from: text)
     }
 
     /// The command that starts or resumes the pane's Claude conversation.

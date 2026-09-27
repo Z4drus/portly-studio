@@ -64,7 +64,7 @@ private struct MenuBarLabel: View {
             Image(nsImage: PortlyGlyph.menuBarImage(active: supervisor.runningCount > 0))
                 .renderingMode(.template)
 
-            if keepAwake.isActive {
+            if keepAwake.isHolding {
                 Image.nucleo(.coffee)
                     .resizable()
                     .frame(width: 12, height: 12)

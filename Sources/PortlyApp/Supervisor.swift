@@ -124,6 +124,11 @@ final class Supervisor: ObservableObject {
                 if runtime.isRunning || wasRunning {
                     StudioWorkspace.shared.touchProject(runtime.projectID)
                 }
+                // A server that starts, by hand or on its own, puts its project
+                // at the top of the sidebar, and it stays there once stopped.
+                if runtime.isRunning, !wasRunning {
+                    StudioWorkspace.shared.projectServerStarted(runtime.projectID)
+                }
             }
         }
         runtime.onFailed = { runtime in
@@ -462,8 +467,10 @@ final class Supervisor: ObservableObject {
             memoryLimitBytes: memoryLimitBytes
         )
         store.mutate { $0.projects.append(project) }
-        // A project nobody has touched yet would go straight to the older list.
+        // A new project starts at the top of the sidebar, and counts as worked
+        // on so the idle sweep leaves it there.
         StudioWorkspace.shared.touchProject(project.id)
+        StudioWorkspace.shared.moveProjectToTop(project.id)
         approveInClaudeCode(project.root)
         refresh()
         return project

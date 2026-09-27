@@ -317,6 +317,7 @@ enum AppIcon: String, CaseIterable {
     case sidebarLeft = "ui-layout/sidebar-left"
     case windowLayout = "design-development/window-layout"
     case inbox = "files/inbox"
+    case archive = "files/archive"
     case rocket = "gaming/rocket"
     case power = "technology-devices/circle-power-off"
     case exit = "arrows/exit-door"
@@ -338,6 +339,8 @@ enum AppIcon: String, CaseIterable {
     case battery = "technology-devices/battery"
     case moon = "weather/moon"
     case magnifierMinus = "filtering-sorting/magnifier-minus"
+    case hardDrive = "technology-devices/hard-drive"
+    case temperature = "weather/temperature"
 }
 
 /// Old configs store SF Symbol names. Map the ones Portly used to ship with,

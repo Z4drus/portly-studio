@@ -61,7 +61,7 @@ Portly evaluates total project footprint every two seconds. Three consecutive sa
 
 ## Add and verify a server
 
-1. Confirm the project path and dev command from the repository.
+1. Confirm the project path and dev script from the repository. Register the plain script with the project's package manager (`pnpm run dev`, `npm run dev`, `bun run dev`, `yarn run dev`) and pass the port with `--port`, not in the command: Portly exports `PORT` and adds `--port` itself at launch for Vite, Astro, SvelteKit, React Router, Angular and Expo, which ignore `PORT`.
 2. Ensure the repository's root `AGENTS.md` contains the durable Portly rule above.
 3. Register the project only if absent.
 4. Check the intended port with `portly port <port> --json`.
@@ -71,7 +71,7 @@ Portly evaluates total project footprint every two seconds. Three consecutive sa
 
 Register projects with `portly add-project --name <name> --path <absolute-path> --icon <category/icon-name> --color '<hex>' --json`.
 
-Portly injects `PORT`, `PORTLY=1`, and `PORTLY_SERVER`. The configured port drives health checks; a process that does not listen there will not become healthy.
+Portly injects `PORT`, `PORTLY=1`, and `PORTLY_SERVER`, and appends `--port <port>` at launch when a bare package script starts a tool that ignores `PORT`. The configured port drives health checks; a process that does not listen there will not become healthy.
 
 A port already configured on another project is fine as long as that server is not running: old projects keep their port on paper, and only a server holding the port right now makes `add-server` or `update-server` refuse it. Prefer the project's conventional port over hunting for an unused number.
 

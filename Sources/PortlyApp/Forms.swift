@@ -20,11 +20,12 @@ struct ProjectForm: View {
         VStack(spacing: 0) {
             Form {
                 Section {
-                    TextField("Name", text: $name)
-                    HStack {
-                        TextField("Folder", text: $root)
-                            .font(.system(size: 12, design: .monospaced))
-                        Button("Choose…", action: chooseFolder)
+                    FormTextField(title: "Name", text: $name, prompt: "My project")
+                    LabeledContent("Folder") {
+                        HStack(spacing: 8) {
+                            FormTextInput(title: "Folder", text: $root, prompt: "~/Developer/my-project", monospaced: true)
+                            Button("Choose…", action: chooseFolder)
+                        }
                     }
                 }
 
@@ -287,11 +288,10 @@ struct ServerForm: View {
     @ViewBuilder
     private var manualSetup: some View {
         Section {
-            TextField("Name", text: $name)
+            FormTextField(title: "Name", text: $name, prompt: "web")
                 .help("How the server shows up in the sidebar, for example \"web\" or \"api\"")
-            TextField("Command", text: $command)
-                .font(.system(size: 12, design: .monospaced))
-                .help("Runs through a login shell, so pnpm, nvm and mise all work")
+            FormTextField(title: "Command", text: $command, prompt: "pnpm run dev", monospaced: true)
+                .help("Runs through a login shell, so pnpm, nvm and mise all work. Portly passes the port itself.")
             TextField("Port", text: $portText)
                 .multilineTextAlignment(.trailing)
         } header: {
@@ -335,10 +335,9 @@ struct ServerForm: View {
 
         Section {
             DisclosureGroup("Advanced options", isExpanded: $advancedExpanded) {
-                TextField("Directory", text: $directory)
-                    .font(.system(size: 12, design: .monospaced))
+                FormTextField(title: "Directory", text: $directory, prompt: "Project folder", monospaced: true)
                     .help("Relative to the project folder, or an absolute path. Empty means the project folder.")
-                TextField("Health URL", text: $healthURL)
+                FormTextField(title: "Health URL", text: $healthURL, prompt: "/api/health")
                     .help("A path like /api/health, or a full URL. Empty means a plain TCP check.")
                 TextField("Environment", text: $envText, axis: .vertical)
                     .font(.system(size: 12, design: .monospaced))
@@ -525,5 +524,39 @@ private struct SuggestionRow: View {
         }
         .buttonStyle(.plain)
         .accessibilityValue(isSelected ? "Selected" : "")
+    }
+}
+
+/// A labelled text box for the grouped forms. A grouped form lays a bare
+/// `TextField` out right-aligned against its label, so text grows leftwards
+/// while you type; this keeps the label on the left and gives the field a
+/// border and ordinary left-to-right entry.
+struct FormTextField: View {
+    let title: String
+    @Binding var text: String
+    var prompt: String?
+    var monospaced = false
+
+    var body: some View {
+        LabeledContent(title) {
+            FormTextInput(title: title, text: $text, prompt: prompt, monospaced: monospaced)
+        }
+    }
+}
+
+/// The field of `FormTextField` on its own, for rows that add a button beside it.
+struct FormTextInput: View {
+    let title: String
+    @Binding var text: String
+    var prompt: String?
+    var monospaced = false
+
+    var body: some View {
+        TextField(title, text: $text, prompt: prompt.map { Text($0) })
+            .labelsHidden()
+            .textFieldStyle(.roundedBorder)
+            .multilineTextAlignment(.leading)
+            .font(monospaced ? .system(size: 12, design: .monospaced) : nil)
+            .accessibilityLabel(title)
     }
 }

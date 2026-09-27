@@ -1,6 +1,7 @@
 import AppKit
 import PortlyCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct MainView: View {
     enum Selection: Hashable {
@@ -26,6 +27,8 @@ struct MainView: View {
     @State private var search = ""
     @State private var doubleClickMonitor: Any?
     @State private var collapsedProjects: Set<String> = MainView.loadCollapsedProjects()
+    /// The project being dragged to a new place in the sidebar.
+    @State private var draggingProjectID: String?
     @FocusState private var searchFocused: Bool
 
     private static let lastSelectionKey = "lastSelection"
@@ -79,7 +82,7 @@ struct MainView: View {
             applyPendingSelection()
             restoreLastSelection()
             syncWorkspaceContext()
-            workspace.seedProjectActivity(projects: supervisor.projects)
+            workspace.prepareSidebarAtLaunch(projects: supervisor.projects)
             installDoubleClickMonitor()
             // Give the window a beat to appear before respawning every shell.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
@@ -95,6 +98,12 @@ struct MainView: View {
         }
         .onChange(of: appSelection.pending) { applyPendingSelection() }
         .onChange(of: selection) {
+            // Reaching an archived project from elsewhere (the menu bar lists
+            // every server) is using it: it comes back to the sidebar rather
+            // than show on screen with no row of its own.
+            if let project = currentProject, workspace.isArchived(project.id) {
+                workspace.unarchiveProject(project.id)
+            }
             syncWorkspaceContext()
             rememberSelection()
         }
@@ -166,11 +175,27 @@ struct MainView: View {
                     ProjectHeader(
                         project: project,
                         childCount: childCount,
-                        isCollapsed: isCollapsed
+                        isCollapsed: isCollapsed,
+                        agentName: workspace.config.defaultAgent.shortName
                     ) {
                         toggleCollapsed(project.id)
+                    } onNewSession: {
+                        if let project = storedProject(project.id) { startSession(in: project) }
                     }
                     .tag(Selection.project(project.id))
+                    .onDrag {
+                        draggingProjectID = project.id
+                        return ProjectReorderDropDelegate.itemProvider(for: project.id)
+                    }
+                    .onDrop(
+                        of: [ProjectReorderDropDelegate.dragType],
+                        delegate: ProjectReorderDropDelegate(
+                            targetID: project.id,
+                            dragging: $draggingProjectID
+                        ) { dragged, target in
+                            workspace.moveProject(dragged, onto: target)
+                        }
+                    )
                     .contextMenu {
                         if let project = storedProject(project.id) { projectMenu(project) }
                     }
@@ -212,11 +237,11 @@ struct MainView: View {
                     .background(.background)
             } else if showAllPutAway {
                 VStack(spacing: 6) {
-                    NucleoIconView(.history, size: 22)
+                    NucleoIconView(.archive, size: 22)
                         .foregroundStyle(.tertiary)
-                    Text("Nothing in use right now")
+                    Text("Every project is archived")
                         .font(PortlyTypography.bodyMedium)
-                    Text("Projects untouched for a day wait behind the button next to the search field.")
+                    Text("Bring one back from the archive button next to the search field.")
                         .font(PortlyTypography.metadata)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -225,9 +250,10 @@ struct MainView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        // Running projects float to the top, so rows change place on their own.
-        // Letting them travel keeps the list readable instead of teleporting.
-        .animation(Motion.reorder, value: runningSignature)
+        // A starting server sends its project to the top, so rows change place
+        // on their own. Letting them travel keeps the list readable.
+        .animation(Motion.reorder, value: workspace.config.projectOrder)
+        .animation(Motion.reorder, value: workspace.config.archivedProjects)
         .safeAreaInset(edge: .top, spacing: 0) { sidebarSearch }
         .safeAreaInset(edge: .bottom) { sidebarActions }
         .onExitCommand {
@@ -235,47 +261,14 @@ struct MainView: View {
         }
     }
 
-    /// Changes exactly when the running/idle split changes, which is what drives
-    /// the sidebar order — not on every uptime tick.
-    private var runningSignature: String {
-        supervisor.projects
-            .map { projectIsRunning($0) ? "1" : "0" }
-            .joined()
-    }
-
-    private var sidebarProjects: [Project] {
-        supervisor.projects.enumerated()
-            .sorted { lhs, rhs in
-                let lhsIsRunning = projectIsRunning(lhs.element)
-                let rhsIsRunning = projectIsRunning(rhs.element)
-
-                if lhsIsRunning != rhsIsRunning {
-                    return lhsIsRunning
-                }
-
-                return lhs.offset < rhs.offset
-            }
-            .map(\.element)
-    }
-
-    /// Projects in use: a server running, something done in the last day, or
-    /// simply the one on screen. The rest wait behind the older-projects button.
+    /// The projects the sidebar lists, in the order you gave them. A server
+    /// starting moves its project to the top; stopping leaves it there.
     private var listedProjects: [Project] {
-        let now = Date()
-        let selectedID = currentProject?.id
-        return sidebarProjects.filter { project in
-            SidebarVisibility.isVisible(
-                hasRunningServer: projectIsRunning(project),
-                lastActivity: workspace.lastActivity(forProject: project.id),
-                isSelected: project.id == selectedID,
-                now: now
-            )
-        }
+        workspace.sidebarProjects(supervisor.projects)
     }
 
-    private var olderProjects: [Project] {
-        let listed = Set(listedProjects.map(\.id))
-        return supervisor.projects.filter { !listed.contains($0.id) }
+    private var archivedProjects: [Project] {
+        workspace.archivedProjects(supervisor.projects)
     }
 
     private var filteredSidebarProjects: [Project] {
@@ -286,7 +279,7 @@ struct MainView: View {
         SidebarSearch.isActive(search) && filteredSidebarProjects.isEmpty
     }
 
-    /// Every project is put away: say so, rather than show an empty column.
+    /// Every project is archived: say so, rather than show an empty column.
     private var showAllPutAway: Bool {
         !SidebarSearch.isActive(search) && listedProjects.isEmpty && !supervisor.projects.isEmpty
     }
@@ -298,6 +291,13 @@ struct MainView: View {
         search = ""
         let session = workspace.revealProject(project.id)
         selection = .session(session.id)
+    }
+
+    /// Put a project in the archive. The detail area leaves it too, so it does
+    /// not linger on screen after disappearing from the sidebar.
+    private func archive(_ project: Project) {
+        if currentProject?.id == project.id { selection = nil }
+        workspace.archiveProject(project.id)
     }
 
     /// Search returns truncated `Project` copies. Mutations and "open" must use
@@ -339,11 +339,14 @@ struct MainView: View {
             focused: $searchFocused,
             onSubmit: activateFirstMatch
         ) {
-            OlderProjectsButton(
-                hidden: olderProjects,
+            ArchivedProjectsButton(
+                archived: archivedProjects,
                 listed: listedProjects,
                 lastActivity: { workspace.lastActivity(forProject: $0) },
-                onPick: bringBack
+                isRunning: projectIsRunning,
+                onOpen: bringBack,
+                onRestore: { workspace.unarchiveProject($0.id) },
+                onArchive: archive
             )
         }
     }
@@ -438,6 +441,17 @@ struct MainView: View {
             NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: NSString(string: project.root).expandingTildeInPath)
         }
         Divider()
+        let visible = listedProjects.map(\.id)
+        if let index = visible.firstIndex(of: project.id) {
+            Button("Move to Top") { workspace.moveProjectToTop(project.id) }
+                .disabled(index == 0)
+            Button("Move Up") { workspace.moveProject(project.id, by: -1, among: visible) }
+                .disabled(index == 0)
+            Button("Move Down") { workspace.moveProject(project.id, by: 1, among: visible) }
+                .disabled(index == visible.count - 1)
+        }
+        Button("Archive Project") { archive(project) }
+        Divider()
         Button("Remove Project") {
             workspace.removeSessions(inProject: project.id)
             supervisor.removeProject(id: project.id)
@@ -493,9 +507,17 @@ struct MainView: View {
         guard selection == nil, let stored = UserDefaults.standard.string(forKey: Self.lastSelectionKey) else { return }
         let parts = stored.split(separator: ":", maxSplits: 1).map(String.init)
         switch parts.first {
-        case "project": if let id = parts.last, storedProject(id) != nil { selection = .project(id) }
-        case "session": if let id = parts.last, workspace.session(id) != nil { selection = .session(id) }
-        case "server": if let id = parts.last, supervisor.runtime(for: id) != nil { selection = .server(id) }
+        // Something inside an archived project stays in the archive.
+        case "project":
+            if let id = parts.last, storedProject(id) != nil, !workspace.isArchived(id) { selection = .project(id) }
+        case "session":
+            if let id = parts.last, let session = workspace.session(id), !workspace.isArchived(session.projectID) {
+                selection = .session(id)
+            }
+        case "server":
+            if let id = parts.last, let project = supervisor.project(containing: id), !workspace.isArchived(project.id) {
+                selection = .server(id)
+            }
         case "resources": selection = .resources
         case "ports": selection = .ports
         default: break
@@ -656,9 +678,13 @@ private struct ProjectHeader: View {
     let project: Project
     let childCount: Int
     let isCollapsed: Bool
+    /// The default agent's short name, for the new-session button's help.
+    let agentName: String
     let onToggle: () -> Void
+    let onNewSession: () -> Void
 
-    @State private var hovering = false
+    @State private var hoveringToggle = false
+    @State private var hoveringNewSession = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -673,33 +699,91 @@ private struct ProjectHeader: View {
                 .font(PortlyTypography.project)
                 .lineLimit(1)
             Spacer()
-            if childCount > 0 {
-                if isCollapsed {
+            HStack(spacing: 2) {
+                if childCount > 0, isCollapsed {
                     Text("\(childCount)")
                         .font(PortlyTypography.metadata)
                         .foregroundStyle(.tertiary)
                         .monospacedDigit()
+                        .padding(.trailing, 2)
                         .transition(.opacity)
                 }
-                Button(action: onToggle) {
-                    NucleoIconView(.chevronDown, size: 9)
-                        .foregroundStyle(.secondary)
-                        .rotationEffect(.degrees(isCollapsed ? -90 : 0))
+                Button(action: onNewSession) {
+                    NucleoIconView(.plus, size: 9)
+                        .foregroundStyle(hoveringNewSession ? Color.primary : Color.secondary)
                         .frame(width: 20, height: 20)
                         .background {
                             RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                .fill(Color.primary.opacity(hovering ? 0.08 : 0))
+                                .fill(Color.primary.opacity(hoveringNewSession ? 0.08 : 0))
                         }
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help(isCollapsed ? "Show servers and sessions" : "Hide servers and sessions")
-                .accessibilityLabel(isCollapsed ? "Expand \(project.name)" : "Collapse \(project.name)")
-                .onHover { hovering = $0 }
+                .help("New coding session with \(agentName)")
+                .accessibilityLabel("New coding session in \(project.name)")
+                .onHover { hoveringNewSession = $0 }
+                if childCount > 0 {
+                    Button(action: onToggle) {
+                        NucleoIconView(.chevronDown, size: 9)
+                            .foregroundStyle(.secondary)
+                            .rotationEffect(.degrees(isCollapsed ? -90 : 0))
+                            .frame(width: 20, height: 20)
+                            .background {
+                                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                    .fill(Color.primary.opacity(hoveringToggle ? 0.08 : 0))
+                            }
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(isCollapsed ? "Show servers and sessions" : "Hide servers and sessions")
+                    .accessibilityLabel(isCollapsed ? "Expand \(project.name)" : "Collapse \(project.name)")
+                    .onHover { hoveringToggle = $0 }
+                }
             }
         }
         .padding(.vertical, 2)
         .animation(Motion.state, value: isCollapsed)
+        .animation(Motion.hover, value: hoveringNewSession)
+        .animation(Motion.hover, value: hoveringToggle)
+    }
+}
+
+/// Reorders the sidebar while a project is dragged: each header it passes over
+/// trades places with it, so the list shows the result before the drop.
+/// The drag carries a type of Portly's own, visible to this process only, so
+/// text or files dragged in from elsewhere never move a project.
+private struct ProjectReorderDropDelegate: DropDelegate {
+    static let dragType = UTType(exportedAs: "dev.portly.project-reference")
+
+    let targetID: String
+    @Binding var dragging: String?
+    let onMove: (_ dragged: String, _ target: String) -> Void
+
+    static func itemProvider(for projectID: String) -> NSItemProvider {
+        let provider = NSItemProvider()
+        provider.registerDataRepresentation(forTypeIdentifier: dragType.identifier, visibility: .ownProcess) { completion in
+            completion(Data(projectID.utf8), nil)
+            return nil
+        }
+        return provider
+    }
+
+    func validateDrop(info: DropInfo) -> Bool {
+        dragging != nil && info.hasItemsConforming(to: [Self.dragType])
+    }
+
+    func dropEntered(info: DropInfo) {
+        guard let dragging, dragging != targetID else { return }
+        withAnimation(Motion.reorder) { onMove(dragging, targetID) }
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        dragging = nil
+        return true
     }
 }
 

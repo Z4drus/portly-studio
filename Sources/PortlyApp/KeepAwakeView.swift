@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// The always-there toolbar control. One click toggles; the chevron opens the
-/// options. State lives in `KeepAwake`, never in the toolbar item, because
-/// SwiftUI rebuilds toolbar items freely and would drop it.
+/// The always-there toolbar control. One click arms or disarms; the chevron
+/// opens the options. State lives in `KeepAwake`, never in the toolbar item,
+/// because SwiftUI rebuilds toolbar items freely and would drop it.
 ///
 /// Nothing in here animates on its own. A `repeatForever` pulse inside a
 /// toolbar item re-laid out the whole toolbar on every frame, and on macOS 27
@@ -15,19 +15,19 @@ struct KeepAwakeToolbarButton: View {
     var body: some View {
         Menu {
             Toggle("Keep the Mac awake while agents work", isOn: Binding(
-                get: { keepAwake.isActive },
+                get: { keepAwake.isEnabled },
                 set: { _ in keepAwake.toggle() }
             ))
 
             Divider()
 
-            Text(workingLine)
-            Text(keepAwake.networkOnline ? "Network online" : "Network offline · released after 90 s")
+            Text(statusLine)
+            Text(keepAwake.networkOnline ? "Network online" : "Network offline · paused after 90 s")
             Text(lidLine)
             if let percent = keepAwake.batteryPercent {
                 Text("Battery \(percent)% · \(keepAwake.onBattery ? "on battery" : "charging")")
             }
-            if let release = keepAwake.lastAutoRelease {
+            if !keepAwake.isHolding, let release = keepAwake.lastAutoRelease {
                 Text("Last release: \(release.reason.message) at \(release.date.formatted(date: .omitted, time: .shortened))")
             }
             if let error = keepAwake.lastError {
@@ -41,8 +41,10 @@ struct KeepAwakeToolbarButton: View {
                     Text("\(minutes) min").tag(minutes)
                 }
             }
-            Toggle("Block sleep with the lid closed", isOn: $keepAwake.blockLidSleep)
+            Toggle("Keep the screen on while agents work", isOn: $keepAwake.keepScreenOn)
+            Toggle("Stay awake with the lid closed", isOn: $keepAwake.blockLidSleep)
             if keepAwake.blockLidSleep {
+                Text("With the lid closed the screen goes dark and agents keep working; the Mac sleeps once they are done.")
                 Text(keepAwake.sudoRuleInstalled
                     ? "Administrator rule installed, no password needed"
                     : "Asks for your password once, the first time it turns on")
@@ -54,30 +56,29 @@ struct KeepAwakeToolbarButton: View {
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.visible)
-        .help(keepAwake.isActive
-            ? "Keeping the Mac awake while agents work. Click to stop; use the arrow for options."
-            : "Click to keep the Mac awake while agents work; use the arrow for options.")
+        .help(helpText)
         .accessibilityLabel("Keep awake")
-        .accessibilityValue(keepAwake.isActive ? "On" : "Off")
-        .animation(Motion.state, value: keepAwake.isActive)
+        .accessibilityValue(keepAwake.isEnabled ? (keepAwake.isHolding ? "Holding sleep" : "Armed") : "Off")
+        .animation(Motion.state, value: keepAwake.isEnabled)
+        .animation(Motion.state, value: keepAwake.isHolding)
         .animation(Motion.state, value: keepAwake.workingCount > 0)
     }
 
     private var pill: some View {
         HStack(spacing: 6) {
             ZStack {
-                if keepAwake.isActive {
+                if keepAwake.isHolding {
                     Circle()
                         .fill(Color.accentColor.opacity(0.22))
                         .frame(width: 22, height: 22)
                         .transition(.opacity)
                 }
                 NucleoIconView(.coffee, size: 15)
-                    .foregroundStyle(keepAwake.isActive ? Color.accentColor : Color.secondary)
+                    .foregroundStyle(keepAwake.isEnabled ? Color.accentColor : Color.secondary)
             }
             .frame(width: 22, height: 22)
 
-            if keepAwake.isActive {
+            if keepAwake.isHolding {
                 Text(keepAwake.workingCount > 0 ? "Awake · working" : "Awake")
                     .font(PortlyTypography.label)
                     .foregroundStyle(Color.accentColor)
@@ -91,36 +92,50 @@ struct KeepAwakeToolbarButton: View {
                     .accessibilityLabel("Keep awake reported a problem")
             }
         }
-        .padding(.horizontal, keepAwake.isActive ? 8 : 2)
+        .padding(.horizontal, keepAwake.isHolding ? 8 : 2)
         .frame(height: 26)
         .background {
             Capsule(style: .continuous)
-                .fill(Color.accentColor.opacity(keepAwake.isActive ? 0.12 : 0))
+                .fill(Color.accentColor.opacity(keepAwake.isHolding ? 0.12 : 0))
         }
         .overlay {
             Capsule(style: .continuous)
-                .strokeBorder(Color.accentColor.opacity(keepAwake.isActive ? 0.28 : 0), lineWidth: 0.75)
+                .strokeBorder(Color.accentColor.opacity(keepAwake.isHolding ? 0.28 : 0), lineWidth: 0.75)
         }
         .contentShape(Capsule())
     }
 
-    private var workingLine: String {
+    private var helpText: String {
+        guard keepAwake.isEnabled else {
+            return "Click to keep the Mac awake whenever agents work; use the arrow for options."
+        }
+        return keepAwake.isHolding
+            ? "Keeping the Mac awake while agents work. Click to turn off; use the arrow for options."
+            : "Armed: the Mac stays awake as soon as an agent works. Click to turn off."
+    }
+
+    private var statusLine: String {
+        guard keepAwake.isEnabled else { return "Off · the Mac sleeps as usual" }
         switch keepAwake.workingCount {
         case 0:
-            if keepAwake.isActive {
-                let idle = keepAwake.idleSince.map { Int(Date().timeIntervalSince($0)) } ?? 0
-                let seconds = max(0, keepAwake.idleMinutes * 60 - idle)
-                return "No agent working · sleep allowed in \(seconds >= 60 ? "\(seconds / 60) min" : "\(seconds) s")"
-            }
-            return "No agent working"
-        case 1: return "1 terminal working"
-        default: return "\(keepAwake.workingCount) terminals working"
+            guard keepAwake.isHolding else { return "Armed · waiting for an agent to work" }
+            let idle = keepAwake.idleSince.map { Int(Date().timeIntervalSince($0)) } ?? 0
+            let seconds = max(0, keepAwake.idleMinutes * 60 - idle)
+            return "Agents idle · sleep allowed in \(seconds >= 60 ? "\(seconds / 60) min" : "\(seconds) s")"
+        case 1: return "Awake · 1 agent working"
+        default: return "Awake · \(keepAwake.workingCount) agents working"
         }
     }
 
     private var lidLine: String {
         if !keepAwake.blockLidSleep { return "Lid closed: the Mac sleeps" }
-        if keepAwake.lidSleepBlocked { return "Lid closed: stays awake" }
-        return keepAwake.isActive ? "Lid protection not granted" : "Lid protection applied when turned on"
+        if keepAwake.lidClosed, keepAwake.isHolding {
+            return keepAwake.screenDimmed
+                ? "Lid closed · screen dimmed, agents keep working"
+                : "Lid closed · screen off, agents keep working"
+        }
+        if keepAwake.lidSleepBlocked { return "Lid closed: screen off, agents keep working" }
+        if keepAwake.isHolding, !keepAwake.sudoRuleInstalled { return "Lid protection not granted" }
+        return "Lid protection applied while agents work"
     }
 }

@@ -78,13 +78,20 @@ the maintainer's Apple ID and team identifier out of every downloaded copy.
   reopened.
 - **Agent presets** — a new terminal starts Claude Code (bypass permissions by default), Codex,
   Cursor Agent, Gemini CLI, a custom command, or a bare shell. Settings → Code.
-- **A sidebar of what is in use** — the sidebar lists a project while one of its servers runs, and
-  for a day after anything was last done in it (a session opened, an agent busy, a server started or
-  stopped). The rest wait behind the button left of the search field: it opens the full list,
-  searchable by name, and picking a project brings it back with its servers listed (none is started)
-  and a coding session open on it. The project on screen never disappears from under you.
+- **A sidebar in your order** — drag a project header to move it (or *Move Up* / *Move Down* in its
+  right-click menu); the order is kept across launches. A server that starts, by hand or on its own,
+  puts its project at the top, and it stays there once the server stops. Each header carries the
+  number of servers and sessions it holds when collapsed, and a **+** that opens a new coding session.
+- **Archive** — right-click a project and choose *Archive Project* to take it out of the sidebar. A
+  project with no server started, no session opened and no agent at work for a day archives itself
+  (Settings → Code → Sidebar: a day, 3 days, a week, a month, or never). Archived projects wait behind
+  the button left of the search field: a searchable list, and picking one brings it back to the top
+  with a coding session open on it; its right-click menu also brings it back without opening
+  anything. Archiving is state, not a date recomputed at launch: an archived project stays archived
+  until you bring it back or one of its servers starts. "Worked on" means a real exchange in a Claude
+  conversation, not the bookkeeping Claude Code appends to a transcript every time it is resumed.
 - **Relaunch** — the sessions of the projects in the sidebar respawn at launch and the last selection
-  comes back; a project put away respawns its sessions the moment one is opened. Claude Code panes
+  comes back; an archived project respawns its sessions the moment one is opened. Claude Code panes
   carry a session id (`--session-id`) and resume their conversation (`--resume`) after a quit or a
   reboot; a *Reset* button in the pane header starts a fresh chat.
 - **Resume notes** — quitting Portly ends the agents it runs, including one that is busy replacing
@@ -110,15 +117,25 @@ the maintainer's Apple ID and team identifier out of every downloaded copy.
 - **Environment files** — every `.env*` at the project root in a floating panel (⇧⌘E) with dotenv
   colouring (keys, strings, comments, `${vars}`, unclosed quotes flagged), plus "create `.env` from
   `.env.example`" and the reverse.
-- **Keep awake** — the mug in the toolbar holds the Mac awake (power assertion, plus
-  `pmset disablesleep` with an administrator so a closed lid keeps Wi-Fi and agents alive). It
-  releases by itself once every terminal has been quiet for N minutes, after 90 s offline, under 10 %
+- **Keep awake** — the mug in the toolbar arms it, and it stays armed across launches. It holds the
+  Mac awake whenever an agent works — a Claude Code session anywhere on the Mac whose own status says
+  `busy` (`~/.claude/sessions/<pid>.json`), or a Portly terminal producing output — lets go once
+  every agent has been idle for N minutes, and holds again as soon as one starts. While holding: a
+  power assertion stops idle sleep, a second one keeps the screen on (optional), and
+  `pmset disablesleep`, with an administrator, keeps a closed lid from cutting Wi-Fi and the agents.
+  With the lid closed and no other screen connected, the built-in screen is put to sleep (dimmed to
+  its minimum if it stays lit, brightness restored when the lid opens), the agents keep working, and
+  the Mac is sent to sleep once they are done. It also lets go after 90 s offline, under 10 %
   battery, and always on quit. The first activation asks for your password once to install a sudo
   rule limited to those two `pmset` commands.
 - **Activity** — a spinner next to a session while any of its terminals produces output, a dot once
   it went quiet and you have not looked yet. Claude Code's animated title glyph is stripped.
 - **Drop zone** — drop files anywhere on a project screen to copy them to its root, then
   *Tell the agent* types the file list into the focused terminal.
+- **Plain dev commands** — *Add Server* suggests the project's scripts as everybody types them
+  (`pnpm run dev`, `npm run dev`, `bun run dev`, `yarn run dev`, from the lockfile) with a free port.
+  The port is never written into the command: Portly exports `PORT`, and adds `--port` when it spawns
+  a bare script that starts Vite, Astro, SvelteKit, React Router, Angular or Expo, which ignore it.
 - **Dependencies** — a Node server whose `node_modules` is missing shows an *Install dependencies*
   button (pnpm, bun, yarn or npm, detected from the lockfile) and greys out *Start* until the install
   finishes.
@@ -164,7 +181,17 @@ months ago should not keep it from everything since: `add-server` and `update-se
 port that another Portly server holds *right now*. Whichever of the two starts second is handled as
 any busy port is.
 
-The native **Resources** screen samples every Portly-owned process tree every two seconds and keeps a
+The native **Resources** screen opens on **This Mac**: live charts, two per row, of the whole
+machine rather than Portly alone, sampled every second while the screen is visible and never
+otherwise. CPU (user / system, every core grouped by performance and efficiency cluster, load
+average), memory (app, wired, compressed, cached, pressure, swap), GPU (device, renderer and tiler
+utilization, memory in use), network (download and upload, totals since the screen opened), disk
+(read / write throughput, IOPS, free space), chip, SSD and battery temperatures on Apple silicon, and
+power (battery, health, cycle count, adapter, system draw, thermal state). The readings follow
+[exelban/stats](https://github.com/exelban/stats); a source a Mac does not offer hides its card
+rather than showing zeros.
+
+Below it, the **Portly** section samples every Portly-owned process tree every two seconds and keeps a
 five-minute memory history: physical footprint, resident RAM, CPU, project trends, and the current
 user's heaviest processes running outside Portly. The optional global project limit and the
 per-project inherit / off / custom overrides live in **Settings → Memory**. A project restarts after
@@ -211,7 +238,7 @@ portly add-project \
 portly add-server \
   --project my-app \
   --name web \
-  --command 'pnpm dev' \
+  --command 'pnpm run dev' \
   --port 5173 \
   --start \
   --json
@@ -260,7 +287,7 @@ layouts live beside it in `studio.json`, and server logs in `~/.config/portly/lo
         {
           "id": "srv_example",
           "name": "web",
-          "command": "pnpm dev",
+          "command": "pnpm run dev",
           "port": 5173,
           "directory": null,
           "env": {},

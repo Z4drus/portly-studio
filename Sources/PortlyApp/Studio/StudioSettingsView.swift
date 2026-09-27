@@ -66,6 +66,20 @@ struct StudioSettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("Sidebar") {
+                Picker("Archive idle projects", selection: Binding(
+                    get: { workspace.config.autoArchiveDays },
+                    set: { workspace.setAutoArchiveDays($0) }
+                )) {
+                    ForEach(StudioConfig.autoArchiveChoices, id: \.self) { days in
+                        Text(Self.autoArchiveLabel(days)).tag(days)
+                    }
+                }
+                Text("A project with no server started, no session opened and no agent at work for that long moves to the archive beside the search field. Right-click a project to archive it yourself, and drag projects to reorder the sidebar; a server that starts brings its project to the top.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Keyboard shortcuts") {
                 shortcutRow("New coding session", "⌘N")
                 shortcutRow("Split right / split down", "⌘D / ⇧⌘D")
@@ -158,6 +172,16 @@ struct StudioSettingsView: View {
         let value = customCommand
         guard value != workspace.config.customAgentCommand else { return }
         workspace.updateSettings { $0.customAgentCommand = value }
+    }
+
+    private static func autoArchiveLabel(_ days: Int) -> String {
+        switch days {
+        case 0: return "Never"
+        case 1: return "After a day"
+        case 7: return "After a week"
+        case 30: return "After a month"
+        default: return "After \(days) days"
+        }
     }
 
     private func shortcutRow(_ title: String, _ keys: String) -> some View {

@@ -161,6 +161,14 @@ final class UsageCenter: ObservableObject {
         notch.stop()
     }
 
+    /// Claude Code sessions anywhere on this Mac that say they are working,
+    /// straight from the status Claude Code writes for each of them.
+    var busyClaudeSessionCount: Int {
+        monitors.values.reduce(0) { total, monitor in
+            total + monitor.sessions.filter { $0.state == .busy }.count
+        }
+    }
+
     /// A provider with no session source gets none, rather than borrowing
     /// somebody else's; nothing at all once sessions are switched off.
     func activity(for providerID: String) -> ActivitySummary? {

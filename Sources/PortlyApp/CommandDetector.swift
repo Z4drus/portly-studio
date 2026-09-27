@@ -11,27 +11,9 @@ enum CommandDetector {
         let command: String
         let port: Int?
         let directory: String?
-        /// Framework CLIs such as Vite accept a forwarded `--port` argument.
-        let supportsPortArgument: Bool
         /// What the guess is based on, shown next to the row.
         let source: String
         var id: String { command + (directory ?? "") }
-
-        init(
-            name: String,
-            command: String,
-            port: Int?,
-            directory: String?,
-            supportsPortArgument: Bool = false,
-            source: String
-        ) {
-            self.name = name
-            self.command = command
-            self.port = port
-            self.directory = directory
-            self.supportsPortArgument = supportsPortArgument
-            self.source = source
-        }
     }
 
     static func suggestions(inProjectRoot root: String, reservedPorts: Set<Int> = []) -> [Suggestion] {
@@ -49,19 +31,18 @@ enum CommandDetector {
 
         var seen = Set<String>()
         var availablePorts: [Int: Int] = [:]
+        // The command stays the plain script whatever the port: Portly hands
+        // the port over at launch (`PORT`, or a flag where the tool ignores it,
+        // see `PortArgument`), so nobody has to edit it into the command.
         return found.filter { seen.insert($0.id).inserted }.map { suggestion in
             guard let port = suggestion.port else { return suggestion }
             let available = availablePorts[port] ?? nextAvailablePort(startingAt: port, reservedPorts: reservedPorts)
             availablePorts[port] = available
-            let command = available != port && suggestion.supportsPortArgument
-                ? "\(suggestion.command) -- --port \(available)"
-                : suggestion.command
             return Suggestion(
                 name: suggestion.name,
-                command: command,
+                command: suggestion.command,
                 port: available,
                 directory: suggestion.directory,
-                supportsPortArgument: suggestion.supportsPortArgument,
                 source: suggestion.source
             )
         }
@@ -91,10 +72,9 @@ enum CommandDetector {
             let detectedFrameworkPort = frameworkPort(deps: deps, script: script)
             return Suggestion(
                 name: serverName(script: key, directory: relative),
-                command: "\(runner) \(key)",
+                command: "\(runner) run \(key)",
                 port: configuredPort ?? detectedFrameworkPort,
                 directory: relative,
-                supportsPortArgument: configuredPort == nil && detectedFrameworkPort != nil,
                 source: label
             )
         }
@@ -115,14 +95,16 @@ enum CommandDetector {
         return Array(ordered.prefix(8))
     }
 
+    /// The package manager the lockfile belongs to; scripts then run as the
+    /// plain `<manager> run <script>` everybody types.
     private static func packageManager(in dir: URL) -> String {
         let fm = FileManager.default
         let lockfiles = [
             ("pnpm-lock.yaml", "pnpm"),
-            ("bun.lockb", "bun run"),
-            ("bun.lock", "bun run"),
+            ("bun.lockb", "bun"),
+            ("bun.lock", "bun"),
             ("yarn.lock", "yarn"),
-            ("package-lock.json", "npm run"),
+            ("package-lock.json", "npm"),
         ]
         for (file, command) in lockfiles where fm.fileExists(atPath: dir.appendingPathComponent(file).path) {
             return command
@@ -132,7 +114,7 @@ enum CommandDetector {
         for (file, command) in lockfiles where fm.fileExists(atPath: parent.appendingPathComponent(file).path) {
             return command
         }
-        return "npm run"
+        return "npm"
     }
 
     private static func dependencyNames(_ json: [String: Any]) -> Set<String> {

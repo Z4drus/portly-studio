@@ -7,13 +7,23 @@ import UserNotifications
 
 /// Keeps the Mac awake while agents work, then lets it sleep for real.
 ///
-/// Two layers: a power-management assertion (no privileges, stops idle sleep
-/// while the display may still go dark) and, optionally, `pmset disablesleep`
-/// so a closed lid does not cut Wi-Fi and every running agent with it. That
-/// second layer needs an administrator once: the first activation installs a
-/// sudo rule limited to the two `pmset` commands, and never asks again. Everything is released when the agents have
-/// been idle for a while, when the network is really gone, when the battery
-/// runs low, and when the app quits.
+/// Turning it on arms it; it holds sleep only while an agent is working, lets
+/// go once every agent has been idle for a while, and holds again the moment
+/// one starts. Two signals say an agent is working: Claude Code's own status
+/// (`busy` in `~/.claude/sessions/<pid>.json`, for every session on the Mac,
+/// wherever it was started) and output in a Portly terminal, for the other
+/// agents.
+///
+/// While holding: a power assertion stops idle sleep, a second one keeps the
+/// screen on (lid open), and optionally `pmset disablesleep` keeps a closed
+/// lid from cutting Wi-Fi and every agent with it. That last layer needs an
+/// administrator once: the first activation installs a sudo rule limited to
+/// the two `pmset` commands, and never asks again. With the lid closed the
+/// built-in screen is put to sleep (or, if it will not go dark, dimmed to its
+/// minimum), and once the agents are done the Mac is sent to sleep.
+///
+/// Everything is released when the agents have been idle for a while, when the
+/// network is really gone, when the battery runs low, and when the app quits.
 final class KeepAwake: ObservableObject {
     static let shared = KeepAwake()
 
@@ -38,8 +48,15 @@ final class KeepAwake: ObservableObject {
         let date: Date
     }
 
-    @Published private(set) var isActive = false
+    /// The switch, remembered across launches.
+    @Published private(set) var isEnabled = false
+    /// Sleep is being held right now: an agent works, or did a moment ago.
+    @Published private(set) var isHolding = false
     @Published private(set) var lidSleepBlocked = false
+    @Published private(set) var lidClosed = false
+    /// The built-in screen would not go dark behind the closed lid, so it was
+    /// dimmed to its minimum; its brightness comes back with the lid.
+    @Published private(set) var screenDimmed = false
     @Published private(set) var networkOnline = true
     @Published private(set) var workingCount = 0
     /// When the agents last went quiet, nil while one is working. Published in
@@ -52,40 +69,64 @@ final class KeepAwake: ObservableObject {
     @Published private(set) var batteryPercent: Int?
     @Published private(set) var onBattery = false
 
-    /// Minutes without any agent output before the Mac is allowed to sleep.
+    /// Minutes without any working agent before the Mac is allowed to sleep.
     @Published var idleMinutes: Int {
         didSet { defaults.set(idleMinutes, forKey: Keys.idleMinutes) }
+    }
+
+    /// Also keep the screen on while agents work with the lid open.
+    @Published var keepScreenOn: Bool {
+        didSet {
+            defaults.set(keepScreenOn, forKey: Keys.keepScreenOn)
+            updateScreenAssertion()
+        }
     }
 
     /// Also block sleep with the lid closed (needs an administrator).
     @Published var blockLidSleep: Bool {
         didSet {
             defaults.set(blockLidSleep, forKey: Keys.blockLidSleep)
-            guard isActive else { return }
-            if blockLidSleep { applyLidBlock() } else { removeLidBlock() }
+            guard isEnabled else { return }
+            if blockLidSleep {
+                ensureSudoRule()
+                if isHolding { applyLidBlock() }
+            } else {
+                removeLidBlock()
+            }
         }
     }
 
     private enum Keys {
+        static let enabled = "keepAwake.enabled"
         static let idleMinutes = "keepAwake.idleMinutes"
+        static let keepScreenOn = "keepAwake.keepScreenOn"
         static let blockLidSleep = "keepAwake.blockLidSleep"
         static let lidApplied = "keepAwake.lidApplied"
+        static let dimmedFrom = "keepAwake.dimmedFrom"
     }
 
     static let workingWindow: TimeInterval = 8
-    private static let offlineGrace: TimeInterval = 90
-    private static let lowBatteryPercent = 10
+    static let offlineGrace: TimeInterval = 90
+    static let lowBatteryPercent = 10
+    private static let tickInterval: TimeInterval = 3
 
     private let defaults = UserDefaults.standard
-    private var assertion: IOPMAssertionID = 0
+    private var sleepAssertion: IOPMAssertionID = 0
+    private var screenAssertion: IOPMAssertionID = 0
+    /// Keeps App Nap from stretching the ticker while the window is hidden:
+    /// an agent that starts working must be noticed within seconds.
+    private var activity: NSObjectProtocol?
     private var ticker: Timer?
     private var offlineSince: Date?
+    private var lastScreenSleepRequest: Date?
+    private var lastLidBlockAttempt: Date?
     private let monitor = NWPathMonitor()
     private let monitorQueue = DispatchQueue(label: "dev.portly.keepawake.network")
 
     private init() {
         let storedMinutes = defaults.integer(forKey: Keys.idleMinutes)
         idleMinutes = storedMinutes == 0 ? 5 : storedMinutes
+        keepScreenOn = defaults.object(forKey: Keys.keepScreenOn) as? Bool ?? true
         blockLidSleep = defaults.object(forKey: Keys.blockLidSleep) as? Bool ?? true
 
         monitor.pathUpdateHandler = { [weak self] path in
@@ -94,18 +135,141 @@ final class KeepAwake: ObservableObject {
         monitor.start(queue: monitorQueue)
         refreshBattery()
         checkSudoRule()
+        screenDimmed = defaults.object(forKey: Keys.dimmedFrom) != nil
         repairAfterCrashIfNeeded()
+        if defaults.bool(forKey: Keys.enabled) {
+            // After the crash repair and the sudo check have had their turn.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.enable(interactive: false) }
+        }
     }
 
     // MARK: - Public
 
     func toggle() {
-        if isActive { deactivate(reason: .manual) } else { activate() }
+        if isEnabled { disable() } else { enable(interactive: true) }
     }
 
-    func activate() {
-        guard !isActive else { return }
+    /// Arm it. Only a click may ask for the administrator password; an
+    /// automatic re-arm at launch goes without lid protection instead.
+    func enable(interactive: Bool = true) {
+        guard !isEnabled else { return }
+        isEnabled = true
+        defaults.set(true, forKey: Keys.enabled)
         lastError = nil
+        lastAutoRelease = nil
+        idleSince = nil
+        offlineSince = nil
+        if blockLidSleep, interactive { ensureSudoRule() }
+        activity = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiatedAllowingIdleSystemSleep],
+            reason: "Portly watches whether coding agents are working"
+        )
+        startTicker()
+        evaluate()
+    }
+
+    func disable() {
+        guard isEnabled else { return }
+        release(reason: .manual)
+        isEnabled = false
+        defaults.set(false, forKey: Keys.enabled)
+        stopTicker()
+        if let activity { ProcessInfo.processInfo.endActivity(activity) }
+        activity = nil
+        idleSince = nil
+        offlineSince = nil
+    }
+
+    /// Called on quit: never leave `disablesleep` or a dimmed screen behind.
+    /// The switch itself is remembered for the next launch.
+    func shutdown() {
+        release(reason: .manual)
+        removeLidBlock()
+        restoreBrightness()
+        stopTicker()
+    }
+
+    // MARK: - Evaluation
+
+    private func startTicker() {
+        stopTicker()
+        let timer = Timer(timeInterval: Self.tickInterval, repeats: true) { [weak self] _ in self?.evaluate() }
+        timer.tolerance = 0.5
+        ticker = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func stopTicker() {
+        ticker?.invalidate()
+        ticker = nil
+    }
+
+    /// Agent terminals with output in the last few seconds, or Claude Code
+    /// sessions that say they are busy, whichever is more: one agent is
+    /// usually both. Shells are left out: a `tail -f` or a dev server in a
+    /// quick terminal would otherwise keep the Mac up forever, lid closed.
+    private func currentWorkingCount(now: Date) -> Int {
+        let terminals = StudioWorkspace.shared.workingPaneCount(now: now, agentsOnly: true)
+        let claude = MainActor.assumeIsolated { UsageCenter.shared.busyClaudeSessionCount }
+        return max(terminals, claude)
+    }
+
+    /// The decision loop: hold while something is happening, release when the
+    /// reason to stay awake is gone, and look after the screen meanwhile.
+    func evaluate(now: Date = Date()) {
+        refreshBattery()
+        // Every assignment below is guarded: `@Published` notifies on each
+        // write, changed or not, and this runs on a timer.
+        let working = currentWorkingCount(now: now)
+        if working != workingCount { workingCount = working }
+        guard isEnabled else { return }
+
+        if working > 0 {
+            if idleSince != nil { idleSince = nil }
+        } else if idleSince == nil {
+            idleSince = now
+        }
+        if networkOnline {
+            offlineSince = nil
+        } else if offlineSince == nil {
+            offlineSince = now
+        }
+
+        let decision = KeepAwakePolicy.decide(
+            isHolding: isHolding,
+            working: working > 0,
+            idleSince: idleSince,
+            idleMinutes: idleMinutes,
+            offlineSince: offlineSince,
+            lowBattery: onBattery && (batteryPercent ?? 100) <= Self.lowBatteryPercent,
+            now: now
+        )
+        switch decision {
+        case .hold: hold()
+        case .release(let reason): release(reason: reason)
+        case .keep: break
+        }
+        retryLidBlockIfNeeded(now: now)
+        manageScreen(now: now)
+    }
+
+    /// `pmset` can fail once (the sudo rule was being installed, the machine
+    /// was waking up). A hold must not stay without lid protection because of
+    /// it, and a release must not leave `disablesleep` behind. Once a minute,
+    /// not on every tick.
+    private func retryLidBlockIfNeeded(now: Date) {
+        let wantsBlock = isHolding && blockLidSleep
+        let blocked = lidSleepBlocked || defaults.bool(forKey: Keys.lidApplied)
+        guard wantsBlock != blocked, sudoRuleInstalled else { return }
+        if let last = lastLidBlockAttempt, now.timeIntervalSince(last) < 60 { return }
+        lastLidBlockAttempt = now
+        if wantsBlock { applyLidBlock() } else { removeLidBlock() }
+    }
+
+    // MARK: - Holding
+
+    private func hold() {
+        guard !isHolding else { return }
         var id: IOPMAssertionID = 0
         let result = IOPMAssertionCreateWithName(
             "PreventUserIdleSystemSleep" as CFString,
@@ -114,43 +278,118 @@ final class KeepAwake: ObservableObject {
             &id
         )
         if result == kIOReturnSuccess {
-            assertion = id
+            sleepAssertion = id
         } else {
             lastError = "Could not create the power assertion (\(result))."
         }
-        isActive = true
-        idleSince = nil
-        offlineSince = nil
+        isHolding = true
         lastAutoRelease = nil
         if blockLidSleep {
-            ensureSudoRule()
+            lastLidBlockAttempt = Date()
             applyLidBlock()
         }
-        startTicker()
-        evaluate()
+        updateScreenAssertion()
     }
 
-    func deactivate(reason: ReleaseReason) {
-        guard isActive else { return }
-        if assertion != 0 {
-            IOPMAssertionRelease(assertion)
-            assertion = 0
+    private func release(reason: ReleaseReason) {
+        guard isHolding else { return }
+        if sleepAssertion != 0 {
+            IOPMAssertionRelease(sleepAssertion)
+            sleepAssertion = 0
         }
+        isHolding = false
+        updateScreenAssertion()
+        restoreBrightness()
         removeLidBlock()
-        isActive = false
-        stopTicker()
-        idleSince = nil
-        offlineSince = nil
-        if reason != .manual {
-            lastAutoRelease = AutoRelease(reason: reason, date: Date())
-            Self.notify(title: "Portly let the Mac sleep", body: "Keep awake ended: \(reason.message).")
+        lastScreenSleepRequest = nil
+        guard reason != .manual else { return }
+        lastAutoRelease = AutoRelease(reason: reason, date: Date())
+        if reason != .agentsIdle {
+            Self.notify(title: "Portly let the Mac sleep", body: "Keep awake paused: \(reason.message).")
+        }
+        // The lid was closed on working agents. They are done: sleep now, as
+        // closing the lid would have done without Portly.
+        if lidClosed, !DisplayPower.hasExternalDisplay() {
+            DisplayPower.sleepSystem()
         }
     }
 
-    /// Called on quit: never leave `disablesleep` behind.
-    func shutdown() {
-        if isActive { deactivate(reason: .manual) } else { removeLidBlock() }
+    /// The screen stays on while agents work with the lid open, when asked.
+    /// Never with the lid closed: that is precisely the lit screen to avoid.
+    private func updateScreenAssertion() {
+        let wanted = isHolding && keepScreenOn && !lidClosed
+        if wanted, screenAssertion == 0 {
+            var id: IOPMAssertionID = 0
+            let result = IOPMAssertionCreateWithName(
+                "PreventUserIdleDisplaySleep" as CFString,
+                IOPMAssertionLevel(kIOPMAssertionLevelOn),
+                "Portly Custom: keeping the screen on while agents work" as CFString,
+                &id
+            )
+            if result == kIOReturnSuccess { screenAssertion = id }
+        } else if !wanted, screenAssertion != 0 {
+            IOPMAssertionRelease(screenAssertion)
+            screenAssertion = 0
+        }
     }
+
+    // MARK: - Lid and screen
+
+    private func manageScreen(now: Date) {
+        let closed = DisplayPower.isLidClosed()
+        if closed != lidClosed {
+            lidClosed = closed
+            lastScreenSleepRequest = nil
+            updateScreenAssertion()
+        }
+        let action = KeepAwakePolicy.screenAction(
+            lidClosed: lidClosed,
+            keepingMacAwake: isHolding && lidSleepBlocked,
+            externalDisplay: lidClosed && DisplayPower.hasExternalDisplay(),
+            builtInLit: lidClosed && DisplayPower.isBuiltInDisplayLit(),
+            dimmed: screenDimmed,
+            lastSleepRequest: lastScreenSleepRequest,
+            now: now
+        )
+        switch action {
+        case .none:
+            break
+        case .sleepScreen:
+            lastScreenSleepRequest = now
+            DisplayPower.sleepDisplays()
+        case .dimAndSleepScreen:
+            dimBuiltInScreen()
+            lastScreenSleepRequest = now
+            DisplayPower.sleepDisplays()
+        case .restoreBrightness:
+            restoreBrightness()
+        }
+    }
+
+    private func dimBuiltInScreen() {
+        guard !screenDimmed, let current = DisplayPower.builtInBrightness() else { return }
+        // Written down first: a crash must not leave the screen at its minimum.
+        defaults.set(Double(current), forKey: Keys.dimmedFrom)
+        if DisplayPower.setBuiltInBrightness(0) { screenDimmed = true }
+    }
+
+    /// Gives the saved brightness back. Kept on file until it really is back:
+    /// with another screen connected the built-in one can be unreachable, and
+    /// the next tick, release or launch tries again.
+    private func restoreBrightness() {
+        guard let stored = defaults.object(forKey: Keys.dimmedFrom) as? Double else {
+            if screenDimmed { screenDimmed = false }
+            return
+        }
+        guard DisplayPower.setBuiltInBrightness(Float(stored)) else {
+            if !screenDimmed { screenDimmed = true }
+            return
+        }
+        defaults.removeObject(forKey: Keys.dimmedFrom)
+        if screenDimmed { screenDimmed = false }
+    }
+
+    // MARK: - Lid sleep (pmset)
 
     /// One password, once: a sudoers rule for exactly the two `pmset`
     /// commands Portly uses. Every later toggle runs silently.
@@ -168,57 +407,6 @@ final class KeepAwake: ObservableObject {
             lastError = "Lid protection needs a one-time administrator approval: \(error.localizedDescription)"
         }
     }
-
-    // MARK: - Evaluation
-
-    private func startTicker() {
-        stopTicker()
-        let timer = Timer(timeInterval: 10, repeats: true) { [weak self] _ in self?.evaluate() }
-        ticker = timer
-        RunLoop.main.add(timer, forMode: .common)
-    }
-
-    private func stopTicker() {
-        ticker?.invalidate()
-        ticker = nil
-    }
-
-    /// The decision loop: hold while something is happening, release when the
-    /// reason to stay awake is gone.
-    func evaluate(now: Date = Date()) {
-        refreshBattery()
-        // Every assignment below is guarded: `@Published` notifies on each
-        // write, changed or not, and this runs on a timer.
-        let working = StudioWorkspace.shared.workingPaneCount()
-        if working != workingCount { workingCount = working }
-        guard isActive else { return }
-
-        if workingCount > 0 {
-            if idleSince != nil { idleSince = nil }
-        } else {
-            if idleSince == nil { idleSince = now }
-            if now.timeIntervalSince(idleSince ?? now) >= Double(idleMinutes * 60) {
-                deactivate(reason: .agentsIdle)
-                return
-            }
-        }
-
-        if networkOnline {
-            offlineSince = nil
-        } else {
-            if offlineSince == nil { offlineSince = now }
-            if now.timeIntervalSince(offlineSince ?? now) >= Self.offlineGrace {
-                deactivate(reason: .offline)
-                return
-            }
-        }
-
-        if onBattery, let percent = batteryPercent, percent <= Self.lowBatteryPercent {
-            deactivate(reason: .lowBattery)
-        }
-    }
-
-    // MARK: - Lid sleep (pmset)
 
     private func applyLidBlock() {
         guard !lidSleepBlocked else { return }
@@ -244,8 +432,10 @@ final class KeepAwake: ObservableObject {
         }
     }
 
-    /// A previous run may have died with `disablesleep 1` still set.
+    /// A previous run may have died with `disablesleep 1` still set, or with
+    /// the screen dimmed behind a closed lid.
     private func repairAfterCrashIfNeeded() {
+        restoreBrightness()
         guard defaults.bool(forKey: Keys.lidApplied) else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
             guard let self else { return }
@@ -351,5 +541,65 @@ final class KeepAwake: ObservableObject {
         content.body = body
         let request = UNNotificationRequest(identifier: "keepawake-\(UUID().uuidString)", content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)
+    }
+}
+
+/// The keep-awake decisions, apart from the side effects so they can be tested.
+enum KeepAwakePolicy {
+    enum Decision: Equatable {
+        case hold
+        case release(KeepAwake.ReleaseReason)
+        case keep
+    }
+
+    enum ScreenAction: Equatable {
+        case none
+        case sleepScreen
+        /// The screen stayed lit after being asked to sleep: dim it as well.
+        case dimAndSleepScreen
+        case restoreBrightness
+    }
+
+    /// How long a closed-lid screen gets to go dark before it is dimmed, and
+    /// how often it is asked again while it stays lit.
+    static let screenSleepGrace: TimeInterval = 10
+    static let screenSleepRetry: TimeInterval = 30
+
+    static func decide(
+        isHolding: Bool,
+        working: Bool,
+        idleSince: Date?,
+        idleMinutes: Int,
+        offlineSince: Date?,
+        lowBattery: Bool,
+        now: Date
+    ) -> Decision {
+        if lowBattery { return isHolding ? .release(.lowBattery) : .keep }
+        if let offlineSince, now.timeIntervalSince(offlineSince) >= KeepAwake.offlineGrace {
+            return isHolding ? .release(.offline) : .keep
+        }
+        if working { return isHolding ? .keep : .hold }
+        guard isHolding, let idleSince else { return .keep }
+        return now.timeIntervalSince(idleSince) >= TimeInterval(idleMinutes * 60) ? .release(.agentsIdle) : .keep
+    }
+
+    /// With the lid closed on a Mac kept awake, its built-in screen must be
+    /// dark. With the lid open, or another screen in use, nothing is touched
+    /// beyond giving back a brightness taken earlier.
+    static func screenAction(
+        lidClosed: Bool,
+        keepingMacAwake: Bool,
+        externalDisplay: Bool,
+        builtInLit: Bool,
+        dimmed: Bool,
+        lastSleepRequest: Date?,
+        now: Date
+    ) -> ScreenAction {
+        guard lidClosed, keepingMacAwake, !externalDisplay else { return dimmed && !lidClosed ? .restoreBrightness : .none }
+        guard builtInLit else { return .none }
+        guard let lastSleepRequest else { return .sleepScreen }
+        let elapsed = now.timeIntervalSince(lastSleepRequest)
+        if !dimmed, elapsed >= screenSleepGrace { return .dimAndSleepScreen }
+        return elapsed >= screenSleepRetry ? .sleepScreen : .none
     }
 }

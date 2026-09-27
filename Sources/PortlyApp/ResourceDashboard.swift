@@ -124,6 +124,13 @@ struct ResourceDashboard: View {
             VStack(alignment: .leading, spacing: 24) {
                 header
 
+                // Mac-wide health. Its own view with its own model, so the
+                // two-second Portly samples below never redraw its charts.
+                SystemHealthSection()
+
+                portlyHeader
+                    .padding(.top, 8)
+
                 if serverRows.isEmpty, externalProcesses.isEmpty {
                     emptyState
                 } else {
@@ -172,33 +179,28 @@ struct ResourceDashboard: View {
     }
 
     private var header: some View {
-        HStack(alignment: .top, spacing: 16) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text("Resource dashboard")
-                    .font(.system(size: 26, weight: .semibold, design: .rounded))
-                    .textSelection(.enabled)
-                Text("Live process monitoring with machine-aware memory diagnostics and safe fixes.")
-                    .font(PortlyTypography.body)
+        VStack(alignment: .leading, spacing: 5) {
+            Text("Resource dashboard")
+                .font(.system(size: 26, weight: .semibold, design: .rounded))
+                .textSelection(.enabled)
+            Text("Live health of this Mac, then what Portly and its dev servers use, with machine-aware memory diagnostics and safe fixes.")
+                .font(PortlyTypography.body)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var portlyHeader: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 16) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Portly")
+                    .font(.system(size: 20, weight: .semibold, design: .rounded))
+                    .accessibilityAddTraits(.isHeader)
+                Text("Managed dev servers and the heaviest processes outside Portly")
+                    .font(PortlyTypography.metadata)
                     .foregroundStyle(.secondary)
             }
-
             Spacer()
-
-            Label {
-                Text("Live · 2 s")
-                    .foregroundStyle(.primary)
-            } icon: {
-                NucleoIconView(.signal, size: 14)
-                    .foregroundStyle(.green)
-            }
-                .font(PortlyTypography.bodyMedium)
-                .padding(.horizontal, 10)
-                .frame(height: 28)
-                .background(.green.opacity(0.1), in: Capsule())
-                .overlay {
-                    Capsule().strokeBorder(.green.opacity(0.2), lineWidth: 0.75)
-                }
-                .accessibilityLabel("Live data, updated every 2 seconds")
+            LiveBadge(text: "Live · 2 s", accessibilityText: "Live data, updated every 2 seconds")
         }
     }
 
@@ -208,7 +210,7 @@ struct ResourceDashboard: View {
         } description: {
             Text("Start a server to collect live resource data.")
         }
-        .frame(maxWidth: .infinity, minHeight: 360)
+        .frame(maxWidth: .infinity, minHeight: 240)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
