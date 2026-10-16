@@ -23,7 +23,7 @@ Whenever setting up Portly for a repository, ensure its root `AGENTS.md` tells a
 - Always use Portly (`portly ...`) to start, stop, restart, inspect, or keep local development servers running.
 - Start with `portly status`. Use `portly status --details` only for the full inventory and metrics, and `--json` only for machine-readable fields. Reuse a healthy managed server; if an in-scope server is running outside Portly, register it and use `portly take-over <project/server> --json`.
 - For long-lived or reusable work, create a project and server.
-- For builds, tests, code generation, and other bounded one-off work, run it directly in the foreground with a timeout; Portly only supervises servers.
+- For builds, tests, code generation, previews, demos, and other bounded one-off work, run `job_id="$(portly temp '<command>' --path <folder> --timeout 30m)"`, then `portly wait "$job_id"`. `temp` returns immediately with an ID; `wait` prints captured logs and exits with the command's real code. A timeout kills the whole process group and exits with code `124`.
 - Never launch persistent development servers directly, in the background, or through another supervisor.
 ```
 
@@ -34,10 +34,13 @@ The Portly installer also adds this rule, between `portly:managed-rule` markers,
 | Command | Purpose |
 | --- | --- |
 | `status`, `list`, `ls` | Compact active/problem view; add `--details` for the full inventory |
+| `temp` | Run a bounded one-off command (build, test, preview) and get a job id back immediately |
+| `wait` | Block until a temporary job ends, print its output, exit with its exit code |
+| `jobs` | List the temporary jobs of this session |
 | `action` | Run a configured maintenance action beside the server, into its terminal and logs |
 | `memory-limit`, `ram-limit` | Show or configure automatic project restarts by footprint |
-| `start`, `stop`, `restart` | Control a server or every server in `--project` |
-| `logs` | Read captured output with `--tail` |
+| `start`, `stop`, `restart` | Control a server or every server in `--project`; `stop <job id>` ends a temporary job |
+| `logs` | Read captured output of a server or a temporary job with `--tail` |
 | `add-project`, `add-server`, `update-server`, `remove` | Manage configuration |
 | `take-over`, `adopt` | Move an external listener under Portly |
 | `port`, `kill-port` | Inspect or explicitly stop a port occupant |
@@ -46,10 +49,18 @@ The Portly installer also adds this rule, between `portly:managed-rule` markers,
 
 Run `portly <command> --help` for exact flags. Use `--json` when structured fields are actually needed; `config` prints JSON or a path directly.
 
-## Servers only
+## Servers or temporary jobs
 
 - **Long-lived or reusable:** create or reuse a project, then add a named server. Projects persist across Portly launches and belong in the sidebar.
-- **Builds, tests, one-off commands:** not Portly's job. Run them directly in the foreground with a timeout, and never create a project merely to host a build, a test run, a throwaway demo, or a short verification server.
+- **Builds, tests, one-off commands, short previews:** a temporary job. Never create a project merely to host a build, a test run, a throwaway demo, or a short verification server.
+
+```bash
+job_id="$(portly temp 'pnpm run build' --path /path/to/repo --timeout 30m)"
+portly wait "$job_id"            # prints the captured output, exits with the command's code
+portly temp 'pnpm test' --wait   # the same in one step
+```
+
+`temp` starts the command right away in its own PTY, in a login shell, and prints the job id. `wait` blocks until it ends; its exit code is the command's own, `124` after a timeout (the whole process group is killed), `130` after `portly stop <job id>`. `portly logs <job id> --tail 100` reads the output of a job still running, `portly jobs` lists them, and a finished job stays readable for one hour. A preview that must listen on a port takes `--port <port>`: it is exported as `PORT`, refused when busy, and the job's status carries the URL once something listens there. Jobs never show in the sidebar and never persist.
 
 ## Memory guard
 

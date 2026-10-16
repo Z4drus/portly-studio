@@ -107,10 +107,66 @@ final class ControlServer {
             case ("GET", "/logs"):
                 let query = request.query["server"] ?? ""
                 let tail = Int(request.query["tail"] ?? "200") ?? 200
-                guard let runtime = supervisor.resolveServer(query) else {
-                    return (404, try fail("No server matching '\(query)'"))
+                if let runtime = supervisor.resolveServer(query) {
+                    return (200, try ok(PortlyAPI.LogsResponse(server: runtime.config.name, lines: runtime.logTail(tail))))
                 }
-                return (200, try ok(PortlyAPI.LogsResponse(server: runtime.config.name, lines: runtime.logTail(tail))))
+                if let job = TemporaryJobCenter.shared.job(query) {
+                    return (200, try ok(PortlyAPI.LogsResponse(server: job.name, lines: job.logs.tail(tail))))
+                }
+                return (404, try fail("No server or temporary job matching '\(query)'"))
+
+            case ("POST", "/temporary/run"):
+                let body: PortlyAPI.RunTemporaryRequest = try request.decode()
+                let name = body.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                let command = body.command.trimmingCharacters(in: .whitespacesAndNewlines)
+                let directory = NSString(string: body.directory).expandingTildeInPath
+                let timeoutSeconds = body.timeoutSeconds ?? TemporaryTimeout.defaultSeconds
+                guard !command.isEmpty else { return (400, try fail("Temporary command cannot be empty")) }
+                guard (1...TemporaryTimeout.maximumSeconds).contains(timeoutSeconds) else {
+                    return (400, try fail("Timeout must be between 1 second and 7 days"))
+                }
+                var isDirectory: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: directory, isDirectory: &isDirectory), isDirectory.boolValue else {
+                    return (400, try fail("Directory does not exist: \(directory)"))
+                }
+                if let port = body.port {
+                    if let conflict = supervisor.runningServer(configuredOn: port) {
+                        return (400, try fail(
+                            "Port \(port) is in use right now by \(conflict.project.name)/\(conflict.server.name). Try \(supervisor.nextAvailablePort(startingAt: port + 1))."
+                        ))
+                    }
+                    if let occupant = supervisor.occupant(of: port) {
+                        return (400, try fail("Port \(port) is already used by \(occupant.command) (pid \(occupant.pid))"))
+                    }
+                }
+                let job = TemporaryJobCenter.shared.run(
+                    name: name.isEmpty ? command : name,
+                    command: command,
+                    directory: directory,
+                    port: body.port,
+                    env: body.env ?? [:],
+                    timeoutSeconds: timeoutSeconds,
+                    settings: supervisor.settings
+                )
+                return (200, try ok(job.status))
+
+            case ("GET", "/temporary/status"):
+                let id = request.query["id"] ?? ""
+                guard let job = TemporaryJobCenter.shared.job(id) else {
+                    return (404, try fail("No temporary job matching '\(id)'"))
+                }
+                return (200, try ok(job.status))
+
+            case ("GET", "/temporary/list"):
+                return (200, try ok(PortlyAPI.TemporaryJobListResponse(jobs: TemporaryJobCenter.shared.statuses)))
+
+            case ("POST", "/temporary/stop"):
+                let body: PortlyAPI.TemporaryJobRequest = try request.decode()
+                guard let job = TemporaryJobCenter.shared.job(body.id) else {
+                    return (404, try fail("No temporary job matching '\(body.id)'"))
+                }
+                job.stop()
+                return (200, try ok(job.status))
 
             case ("POST", "/projects/add"):
                 let body: PortlyAPI.AddProjectRequest = try request.decode()

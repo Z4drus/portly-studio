@@ -22,6 +22,80 @@ enum TerminalTheme {
     static let cornerRadius: CGFloat = 10
 }
 
+/// Holds a terminal view and resizes it only once its own size has settled.
+///
+/// Every frame of a sidebar slide, a divider drag or a window resize used to
+/// reach the terminal: SwiftTerm reflowed its buffer, told the PTY, and the
+/// agent redrew its whole screen, all before the next frame was due. Dozens of
+/// reflows in a quarter second is what the animation stuttered on. Now the
+/// terminal keeps its size while the host moves, pinned to the top-left corner
+/// and clipped, and reflows once, when the host has been still for a moment —
+/// the way iTerm lets its text sit while the window is dragged.
+final class DeferredResizeHost: NSView {
+    static let settleDelay: TimeInterval = 0.08
+
+    private weak var content: NSView?
+    private var pending: DispatchWorkItem?
+
+    override var isFlipped: Bool { true }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.masksToBounds = true
+        layer?.backgroundColor = TerminalTheme.background.cgColor
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+    }
+
+    var contentView: NSView? { content }
+
+    func embed(_ view: NSView) {
+        guard content !== view else { return }
+        content?.removeFromSuperview()
+        view.translatesAutoresizingMaskIntoConstraints = true
+        view.autoresizingMask = []
+        view.frame = CGRect(origin: .zero, size: bounds.size)
+        addSubview(view)
+        content = view
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        needsLayout = true
+    }
+
+    override func layout() {
+        super.layout()
+        guard let content, content.frame.size != bounds.size else { return }
+        // A view that has no size yet is not mid-animation: give it one now.
+        if content.frame.size == .zero {
+            settle()
+            return
+        }
+        pending?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.settle() }
+        pending = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.settleDelay, execute: work)
+    }
+
+    override func viewDidEndLiveResize() {
+        super.viewDidEndLiveResize()
+        settle()
+    }
+
+    private func settle() {
+        pending?.cancel()
+        pending = nil
+        guard let content else { return }
+        let target = CGRect(origin: .zero, size: bounds.size)
+        guard content.frame != target else { return }
+        content.frame = target
+    }
+}
+
 /// Hosts the server's live terminal. The view itself is owned by the runtime, so
 /// scrollback and keyboard focus survive switching servers or closing the window.
 struct TerminalPane: NSViewRepresentable {
@@ -41,6 +115,7 @@ struct TerminalPane: NSViewRepresentable {
     /// A plain container so swapping servers is a view swap, not a rebuild.
     final class ContainerView: NSView {
         private let surface = NSView()
+        private let host = DeferredResizeHost()
         private weak var current: NSView?
 
         override init(frame frameRect: NSRect) {
@@ -71,26 +146,26 @@ struct TerminalPane: NSViewRepresentable {
                 surface.topAnchor.constraint(equalTo: topAnchor, constant: inset),
                 surface.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -inset),
             ])
+
+            host.translatesAutoresizingMaskIntoConstraints = false
+            surface.addSubview(host)
+            let text = TerminalTheme.textInset
+            NSLayoutConstraint.activate([
+                host.leadingAnchor.constraint(equalTo: surface.leadingAnchor, constant: text),
+                host.trailingAnchor.constraint(equalTo: surface.trailingAnchor, constant: -text),
+                host.topAnchor.constraint(equalTo: surface.topAnchor, constant: text),
+                host.bottomAnchor.constraint(equalTo: surface.bottomAnchor, constant: -text),
+            ])
         }
 
         func embed(_ view: NSView) {
             guard current !== view else { return }
-            current?.removeFromSuperview()
-            view.translatesAutoresizingMaskIntoConstraints = false
             view.wantsLayer = true
             view.layer?.cornerRadius = 0
             // Belt and braces: SwiftTerm draws this colour, but setting the layer
             // too means a live resize never flashes the window colour through.
             view.layer?.backgroundColor = TerminalTheme.background.cgColor
-            surface.addSubview(view)
-
-            let inset = TerminalTheme.textInset
-            NSLayoutConstraint.activate([
-                view.leadingAnchor.constraint(equalTo: surface.leadingAnchor, constant: inset),
-                view.trailingAnchor.constraint(equalTo: surface.trailingAnchor, constant: -inset),
-                view.topAnchor.constraint(equalTo: surface.topAnchor, constant: inset),
-                view.bottomAnchor.constraint(equalTo: surface.bottomAnchor, constant: -inset),
-            ])
+            host.embed(view)
             current = view
             window?.makeFirstResponder(view)
         }

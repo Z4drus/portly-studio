@@ -118,6 +118,42 @@ enum TerminalOptionKey {
     }
 }
 
+/// When the launch screen over a new agent terminal may lift.
+///
+/// Nothing in the byte stream says "Claude Code is ready", and the prompt
+/// format changes between versions, so readiness is read from the shape of
+/// the output instead: the shell prompt and the typed command arrive first
+/// and are small; the agent's first screen is big, and then the stream goes
+/// quiet. The agent naming its window is the other reliable sign.
+enum AgentLaunchGate {
+    /// How long the output must have settled before it is judged.
+    static let quietInterval: TimeInterval = 0.45
+    /// Before this, whatever arrived is the shell, not the agent.
+    static let minimumElapsed: TimeInterval = 1.2
+    /// A drawn screen weighs more than a prompt and an echoed command.
+    static let minimumBytes = 1_500
+    /// Quiet with too little output for this long: show whatever there is,
+    /// an error message most likely.
+    static let giveUpAfter: TimeInterval = 3.0
+    /// Never keep the terminal covered longer than this.
+    static let hardCap: TimeInterval = 10.0
+
+    static func revealsAfterQuiet(elapsed: TimeInterval, bytes: Int) -> Bool {
+        (elapsed >= minimumElapsed && bytes >= minimumBytes) || elapsed >= giveUpAfter
+    }
+
+    /// A title that carries the agent's name, set by the agent itself and
+    /// not by the shell echoing the command line it is about to run (which
+    /// also carries the name, as `claude --session-id …`).
+    static func titleAnnouncesAgent(_ title: String, agentName: String, launchCommand: String?) -> Bool {
+        let lowered = title.lowercased()
+        guard lowered.contains(agentName.lowercased()) else { return false }
+        if lowered.contains("--") { return false }
+        if let launchCommand, lowered == launchCommand.lowercased() { return false }
+        return true
+    }
+}
+
 /// `TerminalView` that tells its owner when it gains keyboard focus. SwiftTerm
 /// does not open its responder overrides, so focus is read off the window.
 final class StudioTerminalView: TerminalView {
@@ -125,6 +161,8 @@ final class StudioTerminalView: TerminalView {
     var onCloseShortcut: (() -> Bool)?
     /// ⇧↩ should insert a newline in an agent prompt, not send the message.
     var onShiftReturn: (() -> Bool)?
+    /// Any key typed, before the view sees it: a launch screen lifts on it.
+    var onKeyDown: (() -> Void)?
     private var focusObservation: NSKeyValueObservation?
 
     override func viewDidMoveToWindow() {
@@ -159,6 +197,13 @@ final class TerminalPaneRuntime: NSObject, ObservableObject, LocalProcessDelegat
     @Published private(set) var isRunning = false
     @Published private(set) var exitCode: Int32?
     @Published private(set) var hasFocus = false
+    /// False until the first shell is spawned: a pane that was never shown
+    /// has not "exited", it simply has not started.
+    @Published private(set) var hasStarted = false
+    /// True from the moment an agent terminal starts until the agent has
+    /// drawn its first screen: the pane shows a launch screen instead of the
+    /// shell prompt and the command being typed into it.
+    @Published private(set) var isLaunching = false
     /// Timestamps of the last output chunks. A working agent streams dozens
     /// per second; an idle one refreshes a status line now and then.
     ///
@@ -174,6 +219,8 @@ final class TerminalPaneRuntime: NSObject, ObservableObject, LocalProcessDelegat
     var onFocus: ((TerminalPaneRuntime) -> Void)?
     var onCloseShortcut: ((TerminalPaneRuntime) -> Void)?
     var onTitleChange: ((TerminalPaneRuntime) -> Void)?
+    /// The shell moved to another folder (OSC 7).
+    var onDirectoryChange: ((TerminalPaneRuntime) -> Void)?
     var onExit: ((TerminalPaneRuntime) -> Void)?
 
     private var process: LocalProcess?
@@ -182,6 +229,10 @@ final class TerminalPaneRuntime: NSObject, ObservableObject, LocalProcessDelegat
     private let defaultTitle: String
     private var launchWork: DispatchWorkItem?
     private var restartAfterExit = false
+    private var launchStartedAt: Date?
+    private var launchBytes = 0
+    private var launchQuietWork: DispatchWorkItem?
+    private var launchCapWork: DispatchWorkItem?
     /// Output before this date does not count as "working": a shell and an
     /// agent print a lot while starting, which is not the agent thinking.
     private(set) var activityMutedUntil: Date?
@@ -232,12 +283,21 @@ final class TerminalPaneRuntime: NSObject, ObservableObject, LocalProcessDelegat
             self.send(text: "\\\r")
             return true
         }
+        created.onKeyDown = { [weak self] in self?.revealTerminal() }
         view = created
         if process == nil { start() }
         return created
     }
 
     var hasView: Bool { view != nil }
+
+    /// The agent this pane starts, for the launch screen.
+    var agentName: String { defaultTitle }
+
+    /// Whether the launch brings a conversation back rather than opening one.
+    var launchResumesConversation: Bool {
+        launchCommand?.contains("--resume") == true
+    }
 
     func focus() {
         guard let view, let window = view.window else { return }
@@ -300,8 +360,10 @@ final class TerminalPaneRuntime: NSObject, ObservableObject, LocalProcessDelegat
             currentDirectory: directory
         )
         isRunning = proc.running
+        hasStarted = true
         title = defaultTitle
         if let launchCommand, !launchCommand.isEmpty {
+            if kind == .agent { beginLaunchScreen() }
             // Let the prompt appear first so the command reads as typed, the way
             // an iTerm profile's "send text at start" does.
             let work = DispatchWorkItem { [weak self] in
@@ -310,6 +372,49 @@ final class TerminalPaneRuntime: NSObject, ObservableObject, LocalProcessDelegat
             launchWork = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
         }
+    }
+
+    // MARK: - Launch screen
+
+    /// Cover the terminal until the agent has something to show. The cover
+    /// lifts on the first sign of a ready agent (see `AgentLaunchGate`), on
+    /// any key, when the process ends, and after a hard cap regardless.
+    private func beginLaunchScreen() {
+        launchStartedAt = Date()
+        launchBytes = 0
+        launchCapWork?.cancel()
+        let cap = DispatchWorkItem { [weak self] in self?.revealTerminal() }
+        launchCapWork = cap
+        DispatchQueue.main.asyncAfter(deadline: .now() + AgentLaunchGate.hardCap, execute: cap)
+        scheduleLaunchQuietCheck(after: AgentLaunchGate.giveUpAfter)
+        if !isLaunching { isLaunching = true }
+    }
+
+    func revealTerminal() {
+        guard isLaunching else { return }
+        launchQuietWork?.cancel()
+        launchQuietWork = nil
+        launchCapWork?.cancel()
+        launchCapWork = nil
+        launchStartedAt = nil
+        isLaunching = false
+    }
+
+    /// Re-armed by every chunk of output: when the stream has settled for a
+    /// moment, ask the gate whether what arrived looks like a drawn screen.
+    private func scheduleLaunchQuietCheck(after delay: TimeInterval) {
+        launchQuietWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.isLaunching, let started = self.launchStartedAt else { return }
+            let elapsed = Date().timeIntervalSince(started)
+            if AgentLaunchGate.revealsAfterQuiet(elapsed: elapsed, bytes: self.launchBytes) {
+                self.revealTerminal()
+            } else {
+                self.scheduleLaunchQuietCheck(after: max(0.1, AgentLaunchGate.giveUpAfter - elapsed))
+            }
+        }
+        launchQuietWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     /// A fresh shell in the same pane, after the previous one exited.
@@ -357,6 +462,7 @@ final class TerminalPaneRuntime: NSObject, ObservableObject, LocalProcessDelegat
             self.exitCode = ServerRuntime.normalizedProcessExitCode(exitCode)
             self.isRunning = false
             self.process = nil
+            self.revealTerminal()
             if self.restartAfterExit {
                 self.restartAfterExit = false
                 self.restart()
@@ -375,6 +481,10 @@ final class TerminalPaneRuntime: NSObject, ObservableObject, LocalProcessDelegat
             self.recentOutput.append(Date())
             if self.recentOutput.count > Self.recentOutputCapacity {
                 self.recentOutput.removeFirst(self.recentOutput.count - Self.recentOutputCapacity)
+            }
+            if self.isLaunching {
+                self.launchBytes += slice.count
+                self.scheduleLaunchQuietCheck(after: AgentLaunchGate.quietInterval)
             }
         }
     }
@@ -416,6 +526,11 @@ final class TerminalPaneRuntime: NSObject, ObservableObject, LocalProcessDelegat
     func setTerminalTitle(source: TerminalView, title: String) {
         let trimmed = Self.cleanTitle(title)
         let next = trimmed.isEmpty ? defaultTitle : trimmed
+        if isLaunching, AgentLaunchGate.titleAnnouncesAgent(title, agentName: defaultTitle, launchCommand: launchCommand) {
+            // The agent names its window as it draws its first screen; give
+            // that frame a beat to land before the cover lifts.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in self?.revealTerminal() }
+        }
         guard next != self.title else { return }
         self.title = next
         onTitleChange?(self)
@@ -428,7 +543,9 @@ final class TerminalPaneRuntime: NSObject, ObservableObject, LocalProcessDelegat
         if let directory, let url = URL(string: directory), url.isFileURL {
             next = url.path
         }
-        if next != currentDirectory { currentDirectory = next }
+        guard next != currentDirectory else { return }
+        currentDirectory = next
+        onDirectoryChange?(self)
     }
 
     func scrolled(source: TerminalView, position: Double) {}

@@ -61,6 +61,105 @@ final class PaneLayoutTests: XCTestCase {
     }
 }
 
+final class TerminalTabTests: XCTestCase {
+    private func tabs(_ ids: String...) -> [TerminalTab] {
+        ids.map { TerminalTab(id: $0) }
+    }
+
+    func testANewTabOpensNextToTheActiveOne() {
+        let strip = tabs("a", "b", "c")
+        let afterB = TerminalTabs.inserting(TerminalTab(id: "n"), into: strip, after: "b")
+        XCTAssertEqual(afterB.map(\.id), ["a", "b", "n", "c"])
+        let noActive = TerminalTabs.inserting(TerminalTab(id: "n"), into: strip, after: nil)
+        XCTAssertEqual(noActive.map(\.id), ["a", "b", "c", "n"])
+        XCTAssertEqual(TerminalTabs.inserting(TerminalTab(id: "n"), into: [], after: "ghost").map(\.id), ["n"])
+    }
+
+    func testClosingTheActiveTabShowsItsRightNeighbourThenItsLeftOne() {
+        let strip = tabs("a", "b", "c")
+        let middle = TerminalTabs.removing("b", from: strip, active: "b")
+        XCTAssertEqual(middle.tabs.map(\.id), ["a", "c"])
+        XCTAssertEqual(middle.active, "c")
+
+        let last = TerminalTabs.removing("c", from: strip, active: "c")
+        XCTAssertEqual(last.active, "b")
+
+        let inactive = TerminalTabs.removing("a", from: strip, active: "c")
+        XCTAssertEqual(inactive.tabs.map(\.id), ["b", "c"])
+        XCTAssertEqual(inactive.active, "c", "closing another tab leaves the active one alone")
+
+        let only = TerminalTabs.removing("a", from: tabs("a"), active: "a")
+        XCTAssertTrue(only.tabs.isEmpty)
+        XCTAssertNil(only.active)
+
+        let unknown = TerminalTabs.removing("zzz", from: strip, active: "a")
+        XCTAssertEqual(unknown.tabs.map(\.id), ["a", "b", "c"])
+    }
+
+    func testDraggingTakesThePlaceOfTheTabPassedOver() {
+        let strip = tabs("a", "b", "c", "d")
+        XCTAssertEqual(TerminalTabs.moving("a", onto: "c", in: strip).map(\.id), ["b", "c", "a", "d"])
+        XCTAssertEqual(TerminalTabs.moving("d", onto: "b", in: strip).map(\.id), ["a", "d", "b", "c"])
+        XCTAssertEqual(TerminalTabs.moving("b", onto: "b", in: strip).map(\.id), ["a", "b", "c", "d"])
+    }
+
+    func testAdjacentTabsWrapAround() {
+        let strip = tabs("a", "b", "c")
+        XCTAssertEqual(TerminalTabs.adjacent(to: "c", by: 1, in: strip), "a")
+        XCTAssertEqual(TerminalTabs.adjacent(to: "a", by: -1, in: strip), "c")
+        XCTAssertEqual(TerminalTabs.adjacent(to: nil, by: 1, in: strip), "b")
+        XCTAssertNil(TerminalTabs.adjacent(to: "a", by: 1, in: []))
+    }
+
+    func testOlderConfigsDecodeWithoutTabs() throws {
+        let json = Data(#"{"version":2,"sessions":[]}"#.utf8)
+        let config = try JSONDecoder().decode(StudioConfig.self, from: json)
+        XCTAssertEqual(config.terminalTabs, [])
+        XCTAssertNil(config.activeTerminalTabID)
+        XCTAssertNil(config.terminalFontSize)
+    }
+
+    func testTabsSurviveARoundTrip() throws {
+        var config = StudioConfig()
+        config.terminalTabs = [TerminalTab(id: "tab_1", name: "Deploy", lastDirectory: "/Users/me/app")]
+        config.activeTerminalTabID = "tab_1"
+        config.terminalFontSize = 15
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let decoded = try decoder.decode(StudioConfig.self, from: encoder.encode(config))
+        XCTAssertEqual(decoded.terminalTabs.map(\.name), ["Deploy"])
+        XCTAssertEqual(decoded.terminalTabs.first?.lastDirectory, "/Users/me/app")
+        XCTAssertEqual(decoded.activeTerminalTabID, "tab_1")
+        XCTAssertEqual(decoded.terminalFontSize, 15)
+    }
+}
+
+final class AgentLaunchGateTests: XCTestCase {
+    func testTheCoverLiftsOnceAScreenHasBeenDrawnAndTheStreamSettled() {
+        // The shell prompt and the echoed command: small and early.
+        XCTAssertFalse(AgentLaunchGate.revealsAfterQuiet(elapsed: 0.6, bytes: 400))
+        // Big output, but too early to be the agent.
+        XCTAssertFalse(AgentLaunchGate.revealsAfterQuiet(elapsed: 0.9, bytes: 4_000))
+        // A drawn screen.
+        XCTAssertTrue(AgentLaunchGate.revealsAfterQuiet(elapsed: 1.5, bytes: 4_000))
+        // Nothing much ever came: show whatever there is.
+        XCTAssertTrue(AgentLaunchGate.revealsAfterQuiet(elapsed: 3.2, bytes: 120))
+        XCTAssertLessThan(AgentLaunchGate.giveUpAfter, AgentLaunchGate.hardCap)
+    }
+
+    func testTheAgentNamingItsWindowLiftsTheCoverButTheShellEchoDoesNot() {
+        let command = "claude --dangerously-skip-permissions --session-id abc"
+        XCTAssertTrue(AgentLaunchGate.titleAnnouncesAgent("✳ Claude Code (portly)", agentName: "Claude Code", launchCommand: command))
+        XCTAssertTrue(AgentLaunchGate.titleAnnouncesAgent("claude code", agentName: "Claude Code", launchCommand: command))
+        XCTAssertFalse(AgentLaunchGate.titleAnnouncesAgent(command, agentName: "Claude Code", launchCommand: command))
+        XCTAssertFalse(AgentLaunchGate.titleAnnouncesAgent("claude --resume abc", agentName: "Claude", launchCommand: nil))
+        XCTAssertFalse(AgentLaunchGate.titleAnnouncesAgent("codex", agentName: "Codex", launchCommand: "codex"))
+        XCTAssertFalse(AgentLaunchGate.titleAnnouncesAgent("~/Documents/app", agentName: "Claude Code", launchCommand: command))
+    }
+}
+
 final class TerminalEnvironmentTests: XCTestCase {
     func testInheritedAgentMarkersAreDropped() {
         let env = TerminalStyling.sanitized([

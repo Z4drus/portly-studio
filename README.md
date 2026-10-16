@@ -112,6 +112,15 @@ the maintainer's Apple ID and team identifier out of every downloaded copy.
   starts.
 - **Terminal titles** — the pane header follows the OSC title the CLI sets (Claude Code names its
   tasks) and the working directory.
+- **Free terminal** — the *Terminal* button at the foot of the sidebar opens a terminal that belongs
+  to no project: tabs along the top, iTerm-style, each a login shell starting in your home folder.
+  Close a tab from the cross on its left, double-click to rename it, drag to reorder, ⌘T for a new
+  one, ⌘1–⌘9 to jump, ⌘] / ⌘[ to cycle. A tab remembers the folder it was in and reopens there after
+  a relaunch. Run anything in it, Claude Code included.
+- **Agent launch screen** — a new agent terminal hides the shell prompt and the command it types
+  behind a small launch screen until Claude Code has drawn its first screen: the mascot, a pixel
+  loader, and whether the chat is new or resumed. It lifts as soon as the agent is ready (its title,
+  or output settling), on any key you press, and after ten seconds no matter what.
 - **Quick terminal** — one scratch shell per project, floating top-right, toggled with ⌘J from any
   screen.
 - **Environment files** — every `.env*` at the project root in a floating panel (⇧⌘E) with dotenv
@@ -169,8 +178,13 @@ Adapted from [Codenotch](https://github.com/vinzdg/codenotch) (MIT).
 
 Everything Portly does, kept as-is.
 
-Projects hold long-lived, reusable services. Builds, tests and other one-off commands are not
-Portly's job: run them directly, in the foreground, with a timeout.
+Projects hold long-lived, reusable services. Builds, tests, previews and other one-off commands are
+**temporary jobs**, made for agents and kept out of the sidebar: `portly temp 'pnpm run build'`
+starts the command in its own PTY and prints a job id, `portly wait <id>` blocks until it ends, prints
+the captured output and exits with the command's own code (`124` after a timeout, which kills the
+whole process group), `portly logs <id>` peeks meanwhile, `portly jobs` lists them and
+`portly stop <id>` ends one early. `--port` exports `PORT` to a short preview server and refuses a
+busy port. Jobs never persist; a finished one stays readable for an hour.
 
 A busy configured port makes the server start on the next free one (`PORT` and an explicit
 `-p`/`--port` are rewritten), with a banner to take the configured port back; every port the process
@@ -318,7 +332,9 @@ unavailable to the network.
 | `GET` | `/ping` | Version and availability |
 | `GET` | `/status` | Projects and live server state |
 | `GET` | `/config` | Current configuration |
-| `GET` | `/logs?server=web&tail=200` | Recent server output |
+| `GET` | `/logs?server=web&tail=200` | Recent output of a server or a temporary job |
+| `GET` | `/temporary/status?id=tmp_…`, `/temporary/list` | One temporary job, or all of them |
+| `POST` | `/temporary/run`, `/temporary/stop` | Start or end a temporary job |
 | `GET` | `/ports?port=5173` | Process occupying a port |
 | `POST` | `/start`, `/stop`, `/restart` | Act on a server or project |
 | `POST` | `/actions/run` | Run a configured server action beside it, into its terminal |
@@ -349,13 +365,13 @@ machines. Every write is idempotent and preserves existing instructions.
 
 Compared to upstream Portly:
 
-- **Added** — coding sessions and split agent terminals, workspace trust, the quick terminal, the
-  `.env` panel, keep-awake, the drop zone, Nucleo icons, sidebar search, menu-bar-only mode, and the
-  AI usage rings.
-- **Removed** — temporary jobs (`portly temp` / `portly wait` and their API routes; server actions
-  still run beside a server, streaming into its terminal), the Sparkle auto-updater and its feed
-  (which would replace this build with the stock release), launch telemetry, the landing page, and
-  the Mac App Store companion target.
+- **Added** — coding sessions and split agent terminals, the free terminal with its tabs, the
+  agent launch screen, workspace trust, the quick terminal, the `.env` panel, keep-awake, the drop
+  zone, Nucleo icons, sidebar search, menu-bar-only mode, and the AI usage rings.
+- **Changed** — temporary jobs (`portly temp` / `portly wait`) are headless: an agent's tool,
+  never a sidebar entry; server actions run beside a server, streaming into its terminal.
+- **Removed** — the Sparkle auto-updater and its feed (which would replace this build with the
+  stock release), launch telemetry, the landing page, and the Mac App Store companion target.
 
 Upstream Portly is by [Melvynx](https://github.com/Melvynx/portly). AI usage is adapted from
 [Codenotch](https://github.com/vinzdg/codenotch). Both are MIT, and so is this fork — see

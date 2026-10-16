@@ -88,10 +88,50 @@ private func compactLine(_ item: NamedServerStatus, nameWidth: Int) -> String {
     }
 }
 
+// MARK: - Temporary jobs rendering
+
+extension TemporaryJobStatus {
+    var glyph: String {
+        switch state {
+        case .running: return "◐"
+        case .succeeded: return "✓"
+        case .failed, .timedOut: return "✕"
+        case .stopped: return "○"
+        }
+    }
+
+    var outcome: String {
+        switch state {
+        case .running: return "running"
+        case .succeeded: return "succeeded"
+        case .failed: return "failed"
+        case .timedOut: return "timed-out"
+        case .stopped: return "stopped"
+        }
+    }
+
+    /// `◐ tmp_1a2b3c4d  pnpm run build  running 12s · timeout 30m`
+    var line: String {
+        let elapsed = elapsedSeconds.map { " \(Int($0))s" } ?? ""
+        let timeout = state == .running ? " · timeout \(TemporaryTimeout.display(timeoutSeconds))" : ""
+        let exit = exitCode.map { " · exit \($0)" } ?? ""
+        let listening = url.map { " · \($0)" } ?? ""
+        return "\(glyph) \(id)  \(name)  \(outcome)\(elapsed)\(timeout)\(exit)\(listening)"
+    }
+}
+
+private func renderTemporaryJobs(_ jobs: [TemporaryJobStatus], onlyRunning: Bool) -> [String] {
+    let shown = onlyRunning ? jobs.filter { $0.state == .running } : jobs
+    guard !shown.isEmpty else { return [] }
+    return ["", "Temporary jobs"] + shown.map { "  " + $0.line }
+}
+
 func renderCompact(_ status: PortlyStatus) -> String {
     let servers = namedServers(in: status)
     guard !servers.isEmpty else {
-        return "No servers configured. Add a project and a server to get started."
+        let jobs = renderTemporaryJobs(status.temporaryJobs, onlyRunning: true)
+        return "No servers configured. Add a project and a server for long-lived work, or 'portly temp' for a one-off command."
+            + jobs.joined(separator: "\n")
     }
 
     let runningCount = servers.filter { $0.status.state == .running }.count
@@ -107,18 +147,25 @@ func renderCompact(_ status: PortlyStatus) -> String {
     summary.append("\(problemCount) problem\(problemCount == 1 ? "" : "s")")
     summary.append("\(stoppedCount) stopped")
 
+    let runningJobs = status.temporaryJobs.filter { $0.state == .running }.count
+    if runningJobs > 0 {
+        summary.append("\(runningJobs) temporary job\(runningJobs == 1 ? "" : "s")")
+    }
+    let jobs = renderTemporaryJobs(status.temporaryJobs, onlyRunning: true)
+
     guard !visible.isEmpty else {
-        return summary.joined(separator: " · ") + "\n\nNo active servers."
+        return summary.joined(separator: " · ") + "\n\nNo active servers." + jobs.joined(separator: "\n")
     }
 
     let nameWidth = visible.map(\.name.count).max() ?? 0
     let lines = visible.map { compactLine($0, nameWidth: nameWidth) }
-    return [summary.joined(separator: " · "), "", lines.joined(separator: "\n")].joined(separator: "\n")
+    return ([summary.joined(separator: " · "), "", lines.joined(separator: "\n")] + jobs).joined(separator: "\n")
 }
 
 func renderDetailed(_ status: PortlyStatus) -> String {
     guard !status.projects.isEmpty else {
         return "Nothing configured yet. Add a project and a server to get started."
+            + renderTemporaryJobs(status.temporaryJobs, onlyRunning: false).joined(separator: "\n")
     }
     var out: [String] = []
     for project in status.projects {
@@ -135,6 +182,7 @@ func renderDetailed(_ status: PortlyStatus) -> String {
         }
         out.append("")
     }
+    out.append(contentsOf: renderTemporaryJobs(status.temporaryJobs, onlyRunning: false).drop(while: \.isEmpty))
     return out.joined(separator: "\n").trimmingCharacters(in: .newlines)
 }
 
@@ -153,7 +201,7 @@ struct Portly: ParsableCommand {
         version: portlyVersion,
         subcommands: [
             Status.self, Start.self, Stop.self, Restart.self, Action.self, Logs.self,
-            AddProject.self, AddServer.self, UpdateServer.self,
+            Temp.self, Wait.self, Jobs.self, AddProject.self, AddServer.self, UpdateServer.self,
             MemoryLimit.self, Remove.self, TakeOver.self, Port.self, KillPort.self, Open.self, Quit.self, Forever.self, Config.self,
         ],
         defaultSubcommand: Status.self
@@ -219,7 +267,7 @@ struct Start: ParsableCommand {
 }
 
 struct Stop: ParsableCommand {
-    static let configuration = CommandConfiguration(abstract: "Stop a server, a project, or everything.")
+    static let configuration = CommandConfiguration(abstract: "Stop a server, a project, a temporary job, or everything.")
     @OptionGroup var target: TargetOptions
     @OptionGroup var options: GlobalOptions
 
@@ -228,7 +276,17 @@ struct Stop: ParsableCommand {
 
     func run() throws {
         guard all || target.server != nil || target.project != nil else {
-            fail("Pass a server name, --project <name>, or --all.")
+            fail("Pass a server name, a temporary job id, --project <name>, or --all.")
+        }
+        // A job id from `portly temp` stops the job, not a server.
+        if let id = target.server, id.hasPrefix("tmp_") {
+            do {
+                let job = try client(options).post("temporary/stop", PortlyAPI.TemporaryJobRequest(id: id), as: TemporaryJobStatus.self)
+                emit(job, json: options.json) { "Stopping \($0.id) (\($0.name))" }
+            } catch {
+                fail(error.localizedDescription)
+            }
+            return
         }
         runAction("stop", target, options)
     }
@@ -276,9 +334,9 @@ struct Action: ParsableCommand {
 // MARK: - Logs
 
 struct Logs: ParsableCommand {
-    static let configuration = CommandConfiguration(abstract: "Print the recent output of a server.")
+    static let configuration = CommandConfiguration(abstract: "Print the recent output of a server or a temporary job.")
 
-    @Argument(help: "Server name or id.")
+    @Argument(help: "Server name or id, or a temporary job id.")
     var server: String
 
     @Option(name: .shortAndLong, help: "Number of lines to show.")
@@ -291,6 +349,166 @@ struct Logs: ParsableCommand {
         do {
             let response = try client(options).get("logs?server=\(escaped)&tail=\(tail)", as: PortlyAPI.LogsResponse.self)
             emit(response, json: options.json) { $0.lines.joined(separator: "\n") }
+        } catch {
+            fail(error.localizedDescription)
+        }
+    }
+}
+
+// MARK: - Temporary jobs
+
+struct Temp: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "temp",
+        abstract: "Run a bounded command under Portly without creating a project.",
+        discussion: """
+        For builds, tests, code generation, previews and other one-off work. The \
+        command starts right away in its own PTY and the job id is printed; use \
+        'portly wait <id>' to block until it ends and get its output and exit code, \
+        'portly logs <id>' to peek meanwhile, 'portly stop <id>' to end it early. \
+        At the timeout the whole process group is killed and the job exits with 124.
+        """,
+        aliases: ["temporary", "run-temp"]
+    )
+
+    @Argument(help: "Command to run through a login shell, for example 'pnpm run build'.")
+    var command: String
+
+    @Option(name: .long, help: "Short label for the job. Defaults to the command.")
+    var name: String?
+
+    @Option(name: .long, help: "Working directory. Defaults to the current directory.")
+    var path = FileManager.default.currentDirectoryPath
+
+    @Option(name: .long, help: "Port the command listens on; exported as PORT and refused when busy.")
+    var port: Int?
+
+    @Option(name: .long, help: "Maximum runtime: seconds or a value such as 30s, 10m, or 2h.")
+    var timeout = "30m"
+
+    @Option(name: .long, parsing: .upToNextOption, help: "Environment variables as KEY=VALUE.")
+    var env: [String] = []
+
+    @Flag(name: .long, help: "Wait for the job and print its output, as 'portly wait' would.")
+    var wait = false
+
+    @OptionGroup var options: GlobalOptions
+
+    func run() throws {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { fail("Missing command. Example: portly temp 'pnpm run build'") }
+        guard let timeoutSeconds = TemporaryTimeout.parse(timeout) else {
+            fail("Bad --timeout '\(timeout)'. Use 30s, 10m, 2h, or seconds up to 7 days")
+        }
+        var parsedEnvironment: [String: String] = [:]
+        for entry in env {
+            let parts = entry.split(separator: "=", maxSplits: 1)
+            guard parts.count == 2 else { fail("Bad --env value '\(entry)', expected KEY=VALUE") }
+            parsedEnvironment[String(parts[0])] = String(parts[1])
+        }
+        let label = name?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let body = PortlyAPI.RunTemporaryRequest(
+            name: (label?.isEmpty == false ? label : nil) ?? trimmed,
+            command: trimmed,
+            directory: path,
+            port: port,
+            env: parsedEnvironment.isEmpty ? nil : parsedEnvironment,
+            timeoutSeconds: timeoutSeconds
+        )
+        let job: TemporaryJobStatus
+        do {
+            job = try client(options).post("temporary/run", body, as: TemporaryJobStatus.self)
+        } catch {
+            fail(error.localizedDescription)
+        }
+        if wait {
+            try Wait.waitAndReport(id: job.id, tail: 500, printLogs: true, options: options)
+        } else {
+            emit(job, json: options.json) { $0.id }
+        }
+    }
+}
+
+struct Wait: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "wait",
+        abstract: "Wait for a temporary job and exit with its exit code.",
+        discussion: "The job keeps running under Portly if this command is interrupted. A finished job stays readable for one hour."
+    )
+
+    @Argument(help: "Job id returned by 'portly temp'.")
+    var id: String
+
+    @Option(name: .shortAndLong, help: "Captured log lines to print once the job is done.")
+    var tail = 500
+
+    @Flag(name: .customLong("no-logs"), help: "Print only the result line.")
+    var noLogs = false
+
+    @OptionGroup var options: GlobalOptions
+
+    func run() throws {
+        try Wait.waitAndReport(id: id, tail: tail, printLogs: !noLogs, options: options)
+    }
+
+    /// Polls until the job ends, prints its log and a summary, then exits with
+    /// the job's exit code so a script can chain on it.
+    static func waitAndReport(id: String, tail: Int, printLogs: Bool, options: GlobalOptions) throws -> Never {
+        let escaped = id.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? id
+        var job: TemporaryJobStatus
+        do {
+            job = try client(options).get("temporary/status?id=\(escaped)", as: TemporaryJobStatus.self)
+            while !job.state.isFinished {
+                Thread.sleep(forTimeInterval: 0.25)
+                job = try client(options).get("temporary/status?id=\(escaped)", as: TemporaryJobStatus.self)
+            }
+            if options.json {
+                emit(job, json: true) { _ in "" }
+            } else {
+                if printLogs {
+                    // The last bytes reach the log a moment after the exit.
+                    Thread.sleep(forTimeInterval: 0.15)
+                    let count = min(max(tail, 1), 5_000)
+                    let logs = try client(options).get("logs?server=\(escaped)&tail=\(count)", as: PortlyAPI.LogsResponse.self)
+                    if !logs.lines.isEmpty { print(logs.lines.joined(separator: "\n")) }
+                }
+                print(jobSummary(job))
+            }
+        } catch {
+            fail(error.localizedDescription)
+        }
+        Darwin.exit(job.processExitCode)
+    }
+
+    private static func jobSummary(_ job: TemporaryJobStatus) -> String {
+        let elapsed = job.elapsedSeconds.map { String(format: "%.1fs", $0) } ?? "unknown duration"
+        let exitCode = job.exitCode.map { " · exit \($0)" } ?? ""
+        switch job.state {
+        case .succeeded: return "✓ \(job.id) succeeded · \(elapsed)\(exitCode)"
+        case .failed: return "✕ \(job.id) failed · \(elapsed)\(exitCode)"
+        case .timedOut: return "✕ \(job.id) timed out after \(TemporaryTimeout.display(job.timeoutSeconds))"
+        case .stopped: return "○ \(job.id) stopped · \(elapsed)"
+        case .running: return "◐ \(job.id) running"
+        }
+    }
+}
+
+struct Jobs: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "jobs",
+        abstract: "List the temporary jobs of this Portly session.",
+        discussion: "Running jobs first, then the ones finished in the last hour."
+    )
+
+    @OptionGroup var options: GlobalOptions
+
+    func run() throws {
+        do {
+            let response = try client(options).get("temporary/list", as: PortlyAPI.TemporaryJobListResponse.self)
+            emit(response, json: options.json) { list in
+                guard !list.jobs.isEmpty else { return "No temporary jobs. Start one with 'portly temp <command>'." }
+                return list.jobs.map(\.line).joined(separator: "\n")
+            }
         } catch {
             fail(error.localizedDescription)
         }

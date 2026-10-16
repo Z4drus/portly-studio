@@ -341,7 +341,8 @@ final class Supervisor: ObservableObject {
                     lastMemoryRestartAt: memoryRestart?.timestamp,
                     lastMemoryRestartBytes: memoryRestart?.footprintBytes
                 )
-            }
+            },
+            temporaryJobs: TemporaryJobCenter.shared.statuses
         )
     }
 

@@ -76,6 +76,32 @@ final class SidebarSearchTests: XCTestCase {
         XCTAssertTrue(SidebarSearch.filterProjects(catalog, query: "codeline").isEmpty)
     }
 
+    func testASearchReachesIntoTheArchiveAndNoSearchDoesNot() {
+        let archived = Project(
+            id: "prj_old",
+            name: "Old Shop",
+            root: "/Users/me/Developer/old-shop",
+            servers: [ServerConfig(id: "srv_old", name: "web", command: "pnpm dev", port: 4000)]
+        )
+
+        let idle = SidebarSearch.results(listed: catalog, archived: [archived], query: "")
+        XCTAssertEqual(idle.listed.map(\.id), ["prj_lumail", "prj_now"])
+        XCTAssertTrue(idle.archived.isEmpty, "the archive stays hidden without a query")
+        XCTAssertFalse(idle.isEmpty)
+
+        let byName = SidebarSearch.results(listed: catalog, archived: [archived], query: "shop")
+        XCTAssertTrue(byName.listed.isEmpty)
+        XCTAssertEqual(byName.archived.map(\.id), ["prj_old"])
+        XCTAssertEqual(byName.first, .server("srv_old"), "Return picks the archived match when nothing listed matches")
+
+        let both = SidebarSearch.results(listed: catalog, archived: [archived], query: "web")
+        XCTAssertEqual(both.listed.map(\.id), ["prj_now"])
+        XCTAssertEqual(both.archived.map(\.id), ["prj_old"])
+        XCTAssertEqual(both.first, .server("srv_web"), "a listed match comes before an archived one")
+
+        XCTAssertTrue(SidebarSearch.results(listed: catalog, archived: [archived], query: "zzz").isEmpty)
+    }
+
     func testFirstMatchFollowsSidebarOrder() {
         XCTAssertEqual(SidebarSearch.firstMatch(projects: catalog, query: "now"), .server("srv_web"))
         XCTAssertEqual(SidebarSearch.firstMatch(projects: catalog, query: "redis"), .server("srv_redis"))

@@ -38,6 +38,34 @@ enum SidebarSearch {
         return .project(project.id)
     }
 
+    /// What the sidebar shows for a query: the listed projects that match,
+    /// then the archived ones that match, so a search finds a project put
+    /// away without a trip through the archive button. With no query the
+    /// archive stays hidden, as it should.
+    static func results(listed: [Project], archived: [Project], query: String) -> SidebarSearchResults {
+        guard isActive(query) else { return SidebarSearchResults(listed: listed, archived: []) }
+        return SidebarSearchResults(
+            listed: filterProjects(listed, query: query),
+            archived: filterProjects(archived, query: query)
+        )
+    }
+}
+
+struct SidebarSearchResults: Equatable {
+    var listed: [Project]
+    var archived: [Project]
+
+    var isEmpty: Bool { listed.isEmpty && archived.isEmpty }
+
+    /// Return picks the first listed match, and only then an archived one.
+    var first: SidebarSearchMatch? {
+        guard let project = listed.first ?? archived.first else { return nil }
+        if let server = project.servers.first { return .server(server.id) }
+        return .project(project.id)
+    }
+}
+
+extension SidebarSearch {
     private static func projectMatches(_ project: Project, needle: String) -> Bool {
         contains(project.name, needle)
             || contains((project.root as NSString).lastPathComponent, needle)

@@ -175,6 +175,79 @@ struct TerminalSession: Codable, Identifiable, Hashable {
     var panes: [TerminalPaneConfig] { layout.panes }
 }
 
+// MARK: - Free terminal tabs
+
+/// One tab of the free terminal: a login shell that belongs to no project and
+/// starts in your home folder, or wherever it was last time.
+struct TerminalTab: Codable, Identifiable, Hashable {
+    var id: String
+    /// A name you gave it. Nil shows what the shell reports (its title or
+    /// its folder).
+    var name: String?
+    var createdAt: Date
+    /// The folder the shell was in when last seen (OSC 7), so a relaunch
+    /// reopens the tab where you left it rather than at home.
+    var lastDirectory: String?
+
+    init(
+        id: String = TerminalTab.newID(),
+        name: String? = nil,
+        createdAt: Date = Date(),
+        lastDirectory: String? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.createdAt = createdAt
+        self.lastDirectory = lastDirectory
+    }
+
+    static func newID() -> String { "tab_" + String(UUID().uuidString.prefix(8)).lowercased() }
+}
+
+/// The tab strip's arithmetic, kept pure so it can be checked.
+enum TerminalTabs {
+    /// A new tab goes right after the active one, as in a browser, so a tab
+    /// opened from the middle does not land at the far end.
+    static func inserting(_ tab: TerminalTab, into tabs: [TerminalTab], after activeID: String?) -> [TerminalTab] {
+        var next = tabs
+        if let activeID, let index = next.firstIndex(where: { $0.id == activeID }) {
+            next.insert(tab, at: index + 1)
+        } else {
+            next.append(tab)
+        }
+        return next
+    }
+
+    /// The tabs without `id`, and which one to show next: the neighbour on
+    /// the right, then the one on the left, when the closed tab was active.
+    static func removing(_ id: String, from tabs: [TerminalTab], active activeID: String?) -> (tabs: [TerminalTab], active: String?) {
+        guard let index = tabs.firstIndex(where: { $0.id == id }) else { return (tabs, activeID) }
+        var next = tabs
+        next.remove(at: index)
+        guard activeID == id else { return (next, activeID) }
+        guard !next.isEmpty else { return (next, nil) }
+        return (next, next[min(index, next.count - 1)].id)
+    }
+
+    /// The tab moved to the place of the one it was dropped on.
+    static func moving(_ id: String, onto targetID: String, in tabs: [TerminalTab]) -> [TerminalTab] {
+        guard id != targetID,
+              let from = tabs.firstIndex(where: { $0.id == id }),
+              let to = tabs.firstIndex(where: { $0.id == targetID }) else { return tabs }
+        var next = tabs
+        let moved = next.remove(at: from)
+        next.insert(moved, at: to)
+        return next
+    }
+
+    /// The tab `offset` places away from the active one, wrapping around.
+    static func adjacent(to activeID: String?, by offset: Int, in tabs: [TerminalTab]) -> String? {
+        guard !tabs.isEmpty else { return nil }
+        let current = tabs.firstIndex { $0.id == activeID } ?? 0
+        return tabs[(current + offset + tabs.count) % tabs.count].id
+    }
+}
+
 // MARK: - Agent presets
 
 /// The coding CLI a fresh terminal starts with.
@@ -275,6 +348,11 @@ struct StudioConfig: Codable {
     var projectOrder: [String]
     /// Days without activity before a project archives itself; 0 means never.
     var autoArchiveDays: Int
+    /// The free terminal's tabs, in strip order.
+    var terminalTabs: [TerminalTab]
+    var activeTerminalTabID: String?
+    /// The free terminal's text size. Nil follows the global default.
+    var terminalFontSize: Double?
 
     /// Version 2 rebuilt the activity dates from real exchanges and made the
     /// archive an explicit list.
@@ -301,7 +379,10 @@ struct StudioConfig: Codable {
         projectActivity: [String: Date] = [:],
         archivedProjects: Set<String> = [],
         projectOrder: [String] = [],
-        autoArchiveDays: Int = StudioConfig.defaultAutoArchiveDays
+        autoArchiveDays: Int = StudioConfig.defaultAutoArchiveDays,
+        terminalTabs: [TerminalTab] = [],
+        activeTerminalTabID: String? = nil,
+        terminalFontSize: Double? = nil
     ) {
         self.version = version
         self.defaultAgent = defaultAgent
@@ -318,6 +399,9 @@ struct StudioConfig: Codable {
         self.archivedProjects = archivedProjects
         self.projectOrder = projectOrder
         self.autoArchiveDays = autoArchiveDays
+        self.terminalTabs = terminalTabs
+        self.activeTerminalTabID = activeTerminalTabID
+        self.terminalFontSize = terminalFontSize
     }
 
     init(from decoder: Decoder) throws {
@@ -337,6 +421,9 @@ struct StudioConfig: Codable {
         archivedProjects = try c.decodeIfPresent(Set<String>.self, forKey: .archivedProjects) ?? []
         projectOrder = try c.decodeIfPresent([String].self, forKey: .projectOrder) ?? []
         autoArchiveDays = try c.decodeIfPresent(Int.self, forKey: .autoArchiveDays) ?? StudioConfig.defaultAutoArchiveDays
+        terminalTabs = try c.decodeIfPresent([TerminalTab].self, forKey: .terminalTabs) ?? []
+        activeTerminalTabID = try c.decodeIfPresent(String.self, forKey: .activeTerminalTabID)
+        terminalFontSize = try c.decodeIfPresent(Double.self, forKey: .terminalFontSize)
     }
 
     /// The command a new agent pane types, or nil for a bare shell.

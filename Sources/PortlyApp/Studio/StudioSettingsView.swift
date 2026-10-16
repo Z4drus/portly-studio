@@ -91,6 +91,8 @@ struct StudioSettingsView: View {
                 shortcutRow("Quick terminal", "⌘J")
                 shortcutRow("Environment files panel", "⇧⌘E")
                 shortcutRow("Clear the focused terminal", "⌘K")
+                shortcutRow("Free terminal: new / close tab", "⌘T / ⌘W")
+                shortcutRow("Free terminal: jump to a tab", "⌘1 … ⌘9")
             }
 
             Section("Relaunch") {

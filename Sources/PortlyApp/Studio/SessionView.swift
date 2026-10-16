@@ -340,6 +340,15 @@ private struct PaneView: View {
             header
             ZStack {
                 StudioTerminalHost(runtime: runtime)
+                if runtime.isLaunching {
+                    AgentLaunchOverlay(
+                        agentName: runtime.agentName,
+                        iconID: kindIcon,
+                        resumes: runtime.launchResumesConversation,
+                        location: runtime.projectRoot
+                    )
+                    .transition(AgentLaunchOverlay.transition)
+                }
                 if !runtime.isRunning {
                     exitedOverlay
                         .transition(.opacity)
@@ -357,6 +366,7 @@ private struct PaneView: View {
         }
         .animation(Motion.state, value: isFocused)
         .animation(Motion.paneSwap, value: runtime.isRunning)
+        .animation(AgentLaunchOverlay.lift, value: runtime.isLaunching)
         .animation(Motion.state, value: workspace.activity(for: pane.id))
         .onHover { hovering = $0 }
         .contextMenu { paneMenu }
@@ -524,14 +534,19 @@ struct StudioTerminalHost: NSViewRepresentable {
     }
 
     final class Container: NSView {
-        var inset: CGFloat = 10
-        private weak var current: NSView?
+        var inset: CGFloat = 10 {
+            didSet { if inset != oldValue { pinHost() } }
+        }
+        private let host = DeferredResizeHost()
         private var edges: [NSLayoutConstraint] = []
 
         override init(frame frameRect: NSRect) {
             super.init(frame: frameRect)
             wantsLayer = true
             layer?.backgroundColor = TerminalTheme.background.cgColor
+            host.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(host)
+            pinHost()
         }
 
         required init?(coder: NSCoder) {
@@ -539,21 +554,21 @@ struct StudioTerminalHost: NSViewRepresentable {
         }
 
         func embed(_ view: NSView) {
-            guard current !== view else { return }
-            current?.removeFromSuperview()
-            view.translatesAutoresizingMaskIntoConstraints = false
+            guard host.contentView !== view else { return }
             view.wantsLayer = true
             view.layer?.backgroundColor = TerminalTheme.background.cgColor
-            addSubview(view)
+            host.embed(view)
+        }
+
+        private func pinHost() {
             NSLayoutConstraint.deactivate(edges)
             edges = [
-                view.leadingAnchor.constraint(equalTo: leadingAnchor, constant: inset),
-                view.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -inset),
-                view.topAnchor.constraint(equalTo: topAnchor, constant: 6),
-                view.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -inset),
+                host.leadingAnchor.constraint(equalTo: leadingAnchor, constant: inset),
+                host.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -inset),
+                host.topAnchor.constraint(equalTo: topAnchor, constant: 6),
+                host.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -inset),
             ]
             NSLayoutConstraint.activate(edges)
-            current = view
         }
     }
 }

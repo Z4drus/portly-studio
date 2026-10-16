@@ -25,14 +25,15 @@ final class CoreModelTests: XCTestCase {
         XCTAssertEqual(decoded.actions, server.actions)
     }
 
-    /// Older apps still answer with a `temporaryServers` array; the CLI must
-    /// keep decoding their status rather than refusing to talk to them.
-    func testPortlyStatusIgnoresRetiredTemporaryServers() throws {
+    /// Older apps answer without `temporaryJobs` (and some with a retired
+    /// `temporaryServers` array); the CLI keeps decoding their status.
+    func testPortlyStatusDecodesOlderPayloads() throws {
         let payload = Data(#"{"version":"0.1.10","apiPort":7737,"projects":[],"temporaryServers":[]}"#.utf8)
 
         let status = try PortlyAPI.decoder().decode(PortlyStatus.self, from: payload)
 
         XCTAssertTrue(status.projects.isEmpty)
+        XCTAssertTrue(status.temporaryJobs.isEmpty)
         XCTAssertEqual(status.apiPort, 7737)
     }
 
@@ -49,10 +50,59 @@ final class CoreModelTests: XCTestCase {
 
         XCTAssertTrue(updated.contains("Before"))
         XCTAssertTrue(updated.contains("After"))
-        XCTAssertTrue(updated.contains("run it directly in the foreground"))
-        XCTAssertFalse(updated.contains("portly temp"))
+        XCTAssertTrue(updated.contains("portly temp '<command>'"))
+        XCTAssertTrue(updated.contains("portly wait \"$job_id\""))
+        XCTAssertTrue(updated.contains("exits with code `124`"))
         XCTAssertFalse(updated.contains("old rule"))
         XCTAssertEqual(updated.components(separatedBy: "portly:managed-rule:start").count - 1, 1)
+    }
+
+    func testTemporaryTimeoutParsesFriendlyDurations() {
+        XCTAssertEqual(TemporaryTimeout.parse("45"), 45)
+        XCTAssertEqual(TemporaryTimeout.parse("30s"), 30)
+        XCTAssertEqual(TemporaryTimeout.parse("1.5m"), 90)
+        XCTAssertEqual(TemporaryTimeout.parse("2h"), 7_200)
+        XCTAssertNil(TemporaryTimeout.parse("0"))
+        XCTAssertNil(TemporaryTimeout.parse("forever"))
+        XCTAssertNil(TemporaryTimeout.parse("8d"))
+        XCTAssertEqual(TemporaryTimeout.display(90), "90s")
+        XCTAssertEqual(TemporaryTimeout.display(1_800), "30m")
+        XCTAssertEqual(TemporaryTimeout.display(7_200), "2h")
+    }
+
+    func testTemporaryJobMapsItsOutcomeToAShellExitCode() throws {
+        // Whole seconds: the wire format is ISO 8601 without fractions.
+        let moment = Date(timeIntervalSince1970: 1_800_000_000)
+        let base = TemporaryJobStatus(
+            id: "tmp_test", name: "build", command: "pnpm run build", directory: "/tmp",
+            state: .succeeded, pid: nil, startedAt: moment, finishedAt: moment.addingTimeInterval(12),
+            timeoutSeconds: 60, deadline: moment.addingTimeInterval(60), exitCode: 0, error: nil
+        )
+        XCTAssertEqual(base.elapsedSeconds, 12)
+        XCTAssertEqual(base.processExitCode, 0)
+
+        var failed = base
+        failed.state = .failed
+        failed.exitCode = 7
+        XCTAssertEqual(failed.processExitCode, 7)
+
+        var timedOut = base
+        timedOut.state = .timedOut
+        timedOut.exitCode = nil
+        XCTAssertEqual(timedOut.processExitCode, 124)
+
+        var stopped = base
+        stopped.state = .stopped
+        XCTAssertEqual(stopped.processExitCode, 130)
+        XCTAssertTrue(stopped.state.isFinished)
+        XCTAssertFalse(TemporaryJobState.running.isFinished)
+
+        // The wire format round-trips, port and URL included.
+        var preview = base
+        preview.port = 4173
+        preview.url = "http://localhost:4173"
+        let decoded = try PortlyAPI.decoder().decode(TemporaryJobStatus.self, from: PortlyAPI.encoder().encode(preview))
+        XCTAssertEqual(decoded, preview)
     }
 
     func testRawWaitStatusIsNormalizedBeforeExposingExitCode() {

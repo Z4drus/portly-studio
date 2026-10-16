@@ -7,6 +7,8 @@ struct MainView: View {
     enum Selection: Hashable {
         case resources
         case ports
+        /// The free terminal and its tabs.
+        case terminal
         case project(String)
         case server(String)
         case session(String)
@@ -166,66 +168,13 @@ struct MainView: View {
 
     private var sidebar: some View {
         List(selection: $selection) {
-            ForEach(filteredSidebarProjects) { project in
-                let sessions = workspace.sessions(for: project.id)
-                let childCount = project.servers.count + sessions.count
-                // A search is a request to see matches: never hide them.
-                let isCollapsed = collapsedProjects.contains(project.id) && !SidebarSearch.isActive(search)
-                Section {
-                    ProjectHeader(
-                        project: project,
-                        childCount: childCount,
-                        isCollapsed: isCollapsed,
-                        agentName: workspace.config.defaultAgent.shortName
-                    ) {
-                        toggleCollapsed(project.id)
-                    } onNewSession: {
-                        if let project = storedProject(project.id) { startSession(in: project) }
-                    }
-                    .tag(Selection.project(project.id))
-                    .onDrag {
-                        draggingProjectID = project.id
-                        return ProjectReorderDropDelegate.itemProvider(for: project.id)
-                    }
-                    .onDrop(
-                        of: [ProjectReorderDropDelegate.dragType],
-                        delegate: ProjectReorderDropDelegate(
-                            targetID: project.id,
-                            dragging: $draggingProjectID
-                        ) { dragged, target in
-                            workspace.moveProject(dragged, onto: target)
-                        }
-                    )
-                    .contextMenu {
-                        if let project = storedProject(project.id) { projectMenu(project) }
-                    }
-
-                    if !isCollapsed {
-                        ForEach(Array(project.servers.enumerated()), id: \.element.id) { index, server in
-                            if let runtime = supervisor.runtime(for: server.id) {
-                                SidebarTreeRow(isLast: index == childCount - 1) {
-                                    ServerRow(runtime: runtime)
-                                }
-                                .tag(Selection.server(server.id))
-                                .contextMenu {
-                                    if let project = storedProject(project.id) {
-                                        serverMenu(runtime, project: project)
-                                    }
-                                }
-                            }
-                        }
-
-                        ForEach(Array(sessions.enumerated()), id: \.element.id) { index, session in
-                            SidebarTreeRow(isLast: project.servers.count + index == childCount - 1) {
-                                SessionRow(session: session) {
-                                    workspace.removeSession(session.id)
-                                    if selection == .session(session.id) { selection = .project(session.projectID) }
-                                }
-                            }
-                            .tag(Selection.session(session.id))
-                        }
-                    }
-                }
+            ForEach(searchResults.listed) { project in
+                projectSection(project, isArchived: false, leadsArchive: false)
+            }
+            // A search reaches into the archive too: its matches follow the
+            // listed ones under a heading, and picking one brings it back.
+            ForEach(Array(searchResults.archived.enumerated()), id: \.element.id) { index, project in
+                projectSection(project, isArchived: true, leadsArchive: index == 0)
             }
         }
         .listStyle(.sidebar)
@@ -261,6 +210,80 @@ struct MainView: View {
         }
     }
 
+    /// One project's rows: its header, then its servers and sessions.
+    @ViewBuilder
+    private func projectSection(_ project: Project, isArchived: Bool, leadsArchive: Bool) -> some View {
+        let sessions = workspace.sessions(for: project.id)
+        let childCount = project.servers.count + sessions.count
+        // A search is a request to see matches: never hide them.
+        let isCollapsed = collapsedProjects.contains(project.id) && !SidebarSearch.isActive(search)
+        Section {
+            ProjectHeader(
+                project: project,
+                childCount: childCount,
+                isCollapsed: isCollapsed,
+                isArchived: isArchived,
+                agentName: workspace.config.defaultAgent.shortName
+            ) {
+                toggleCollapsed(project.id)
+            } onNewSession: {
+                if let project = storedProject(project.id) { startSession(in: project) }
+            }
+            .tag(Selection.project(project.id))
+            .onDrag {
+                draggingProjectID = project.id
+                return ProjectReorderDropDelegate.itemProvider(for: project.id)
+            }
+            .onDrop(
+                of: [ProjectReorderDropDelegate.dragType],
+                delegate: ProjectReorderDropDelegate(
+                    targetID: project.id,
+                    dragging: $draggingProjectID
+                ) { dragged, target in
+                    workspace.moveProject(dragged, onto: target)
+                }
+            )
+            .contextMenu {
+                if let project = storedProject(project.id) { projectMenu(project) }
+            }
+
+            if !isCollapsed {
+                ForEach(Array(project.servers.enumerated()), id: \.element.id) { index, server in
+                    if let runtime = supervisor.runtime(for: server.id) {
+                        SidebarTreeRow(isLast: index == childCount - 1) {
+                            ServerRow(runtime: runtime)
+                        }
+                        .tag(Selection.server(server.id))
+                        .contextMenu {
+                            if let project = storedProject(project.id) {
+                                serverMenu(runtime, project: project)
+                            }
+                        }
+                    }
+                }
+
+                ForEach(Array(sessions.enumerated()), id: \.element.id) { index, session in
+                    SidebarTreeRow(isLast: project.servers.count + index == childCount - 1) {
+                        SessionRow(session: session) {
+                            workspace.removeSession(session.id)
+                            if selection == .session(session.id) { selection = .project(session.projectID) }
+                        }
+                    }
+                    .tag(Selection.session(session.id))
+                }
+            }
+        } header: {
+            if leadsArchive {
+                Text("Archived")
+                    .font(PortlyTypography.label)
+                    .foregroundStyle(.tertiary)
+                    .kerning(0.4)
+                    .textCase(.uppercase)
+                    .padding(.top, 6)
+            }
+        }
+    }
+
     /// The projects the sidebar lists, in the order you gave them. A server
     /// starting moves its project to the top; stopping leaves it there.
     private var listedProjects: [Project] {
@@ -271,12 +294,14 @@ struct MainView: View {
         workspace.archivedProjects(supervisor.projects)
     }
 
-    private var filteredSidebarProjects: [Project] {
-        SidebarSearch.filterProjects(listedProjects, query: search)
+    /// What the list shows: everything listed when there is no search, the
+    /// listed and archived matches when there is.
+    private var searchResults: SidebarSearchResults {
+        SidebarSearch.results(listed: listedProjects, archived: archivedProjects, query: search)
     }
 
     private var showEmptySearch: Bool {
-        SidebarSearch.isActive(search) && filteredSidebarProjects.isEmpty
+        SidebarSearch.isActive(search) && searchResults.isEmpty
     }
 
     /// Every project is archived: say so, rather than show an empty column.
@@ -307,7 +332,7 @@ struct MainView: View {
     }
 
     private func activateFirstMatch() {
-        switch SidebarSearch.firstMatch(projects: listedProjects, query: search) {
+        switch searchResults.first {
         case .server(let id):
             selection = .server(id)
         case .project(let id):
@@ -356,6 +381,15 @@ struct MainView: View {
             UsageSidebarSection()
 
             sidebarDestinationButton(
+                title: "Terminal",
+                icon: .terminalSquare,
+                selection: .terminal,
+                hint: "A free terminal with tabs, starting at your home folder, for anything that is not a project's business",
+                count: workspace.terminalTabs.count,
+                isBusy: workspace.isTerminalWorkspaceWorking
+            )
+
+            sidebarDestinationButton(
                 title: "Resources",
                 icon: .chartLine,
                 selection: .resources,
@@ -389,14 +423,30 @@ struct MainView: View {
         title: String,
         icon: AppIcon,
         selection destination: Selection,
-        hint: String
+        hint: String,
+        count: Int = 0,
+        isBusy: Bool = false
     ) -> some View {
         Button {
             selection = destination
         } label: {
-            HStack {
+            HStack(spacing: 6) {
                 NucleoLabel(title, icon: icon)
                 Spacer()
+                if isBusy {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .frame(width: 12, height: 12)
+                        .transition(.opacity)
+                        .accessibilityLabel("Working")
+                }
+                if count > 0 {
+                    Text("\(count)")
+                        .font(PortlyTypography.metadata)
+                        .foregroundStyle(.tertiary)
+                        .monospacedDigit()
+                        .transition(.opacity)
+                }
                 NucleoIconView(.chevronRight, size: 10)
                     .foregroundStyle(.secondary)
                     .accessibilityHidden(true)
@@ -410,8 +460,10 @@ struct MainView: View {
             RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .fill(self.selection == destination ? Color.accentColor.opacity(0.14) : Color.primary.opacity(0.055))
         }
+        .animation(Motion.state, value: isBusy)
         .accessibilityHint(hint)
         .accessibilityLabel(title)
+        .accessibilityValue(count > 0 ? "\(count) tab\(count == 1 ? "" : "s")" : "")
     }
 
     @ViewBuilder
@@ -469,7 +521,7 @@ struct MainView: View {
         case .project(let id): return storedProject(id)
         case .session(let id): return workspace.session(id).flatMap { storedProject($0.projectID) }
         case .server(let id): return supervisor.project(containing: id)
-        case .resources, .ports, nil: return nil
+        case .resources, .ports, .terminal, nil: return nil
         }
     }
 
@@ -498,6 +550,7 @@ struct MainView: View {
         case .server(let id): value = "server:\(id)"
         case .resources: value = "resources"
         case .ports: value = "ports"
+        case .terminal: value = "terminal"
         case nil: value = nil
         }
         UserDefaults.standard.set(value, forKey: Self.lastSelectionKey)
@@ -520,6 +573,7 @@ struct MainView: View {
             }
         case "resources": selection = .resources
         case "ports": selection = .ports
+        case "terminal": selection = .terminal
         default: break
         }
     }
@@ -607,6 +661,8 @@ struct MainView: View {
             ResourceDashboard()
         case .ports:
             PortsView()
+        case .terminal:
+            TerminalWorkspaceView()
         case .server(let id):
             if let runtime = supervisor.runtime(for: id) {
                 ServerDetail(runtime: runtime) {
@@ -678,6 +734,8 @@ private struct ProjectHeader: View {
     let project: Project
     let childCount: Int
     let isCollapsed: Bool
+    /// Shown by a search reaching into the archive: a small mark says so.
+    var isArchived = false
     /// The default agent's short name, for the new-session button's help.
     let agentName: String
     let onToggle: () -> Void
@@ -698,6 +756,12 @@ private struct ProjectHeader: View {
             Text(project.name)
                 .font(PortlyTypography.project)
                 .lineLimit(1)
+            if isArchived {
+                NucleoIconView(.archive, size: 9)
+                    .foregroundStyle(.tertiary)
+                    .help("In the archive. Selecting it brings it back to the sidebar.")
+                    .accessibilityLabel("Archived")
+            }
             Spacer()
             HStack(spacing: 2) {
                 if childCount > 0, isCollapsed {

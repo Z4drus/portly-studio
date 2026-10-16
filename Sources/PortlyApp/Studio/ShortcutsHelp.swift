@@ -33,6 +33,12 @@ struct ShortcutsHelpPopover: View {
             Row(title: "Quick terminal", keys: ["⌘", "J"]),
             Row(title: "Environment files", keys: ["⇧", "⌘", "E"]),
         ]),
+        Group(title: "Free terminal", rows: [
+            Row(title: "New tab", keys: ["⌘", "T"]),
+            Row(title: "Close tab", keys: ["⌘", "W"]),
+            Row(title: "Next / previous tab", keys: ["⌘", "]", "·", "⌘", "["]),
+            Row(title: "Jump to a tab", keys: ["⌘", "1", "…", "⌘", "9"]),
+        ]),
     ]
 
     var body: some View {
@@ -57,8 +63,8 @@ struct ShortcutsHelpPopover: View {
                             Spacer(minLength: 16)
                             HStack(spacing: 3) {
                                 ForEach(Array(row.keys.enumerated()), id: \.offset) { _, key in
-                                    if key == "·" {
-                                        Text("or")
+                                    if key == "·" || key == "…" {
+                                        Text(key == "·" ? "or" : "to")
                                             .font(PortlyTypography.metadata)
                                             .foregroundStyle(.tertiary)
                                             .padding(.horizontal, 2)

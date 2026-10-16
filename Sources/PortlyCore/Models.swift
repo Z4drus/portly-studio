@@ -406,22 +406,151 @@ public struct ProjectStatus: Codable, Identifiable, Hashable {
     }
 }
 
+// MARK: - Temporary jobs
+
+/// Where a temporary job stands. Only `running` is not final.
+public enum TemporaryJobState: String, Codable, Hashable {
+    case running
+    case succeeded
+    case failed
+    case timedOut
+    case stopped
+
+    public var isFinished: Bool { self != .running }
+}
+
+/// One bounded command an agent asked Portly to supervise: a build, a test
+/// run, a preview server for a minute. Never a project, never in the sidebar,
+/// never written to `config.json`; forgotten an hour after it ends.
+public struct TemporaryJobStatus: Codable, Identifiable, Hashable {
+    public var id: String
+    public var name: String
+    public var command: String
+    public var directory: String
+    public var state: TemporaryJobState
+    public var pid: Int32?
+    public var startedAt: Date?
+    public var finishedAt: Date?
+    public var timeoutSeconds: Int
+    public var deadline: Date?
+    public var exitCode: Int32?
+    public var error: String?
+    /// The port the job was asked to watch, exported to it as `PORT`.
+    public var port: Int?
+    /// `http://localhost:<port>` once something listens on that port.
+    public var url: String?
+
+    public init(
+        id: String,
+        name: String,
+        command: String,
+        directory: String,
+        state: TemporaryJobState,
+        pid: Int32?,
+        startedAt: Date?,
+        finishedAt: Date?,
+        timeoutSeconds: Int,
+        deadline: Date?,
+        exitCode: Int32?,
+        error: String?,
+        port: Int? = nil,
+        url: String? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.command = command
+        self.directory = directory
+        self.state = state
+        self.pid = pid
+        self.startedAt = startedAt
+        self.finishedAt = finishedAt
+        self.timeoutSeconds = timeoutSeconds
+        self.deadline = deadline
+        self.exitCode = exitCode
+        self.error = error
+        self.port = port
+        self.url = url
+    }
+
+    public var elapsedSeconds: TimeInterval? {
+        guard let startedAt else { return nil }
+        return (finishedAt ?? Date()).timeIntervalSince(startedAt)
+    }
+
+    /// What `portly wait` exits with: the command's own code, `124` for a
+    /// timeout as `timeout(1)` does, `130` for an explicit stop.
+    public var processExitCode: Int32 {
+        switch state {
+        case .succeeded: return 0
+        case .timedOut: return 124
+        case .stopped: return 130
+        case .failed: return exitCode.flatMap { $0 == 0 ? nil : $0 } ?? 1
+        case .running: return 0
+        }
+    }
+}
+
+/// How long a temporary job may run: `30s`, `10m`, `2h`, or plain seconds.
+public enum TemporaryTimeout {
+    public static let defaultSeconds = 30 * 60
+    public static let maximumSeconds = 7 * 24 * 60 * 60
+
+    public static func parse(_ raw: String) -> Int? {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !value.isEmpty else { return nil }
+
+        let multiplier: Double
+        let number: Substring
+        switch value.last {
+        case "s": multiplier = 1; number = value.dropLast()
+        case "m": multiplier = 60; number = value.dropLast()
+        case "h": multiplier = 3_600; number = value.dropLast()
+        default: multiplier = 1; number = Substring(value)
+        }
+        guard let amount = Double(number), amount > 0 else { return nil }
+        let seconds = Int(ceil(amount * multiplier))
+        guard seconds <= maximumSeconds else { return nil }
+        return seconds
+    }
+
+    public static func display(_ seconds: Int) -> String {
+        if seconds.isMultiple(of: 3_600) { return "\(seconds / 3_600)h" }
+        if seconds.isMultiple(of: 60) { return "\(seconds / 60)m" }
+        return "\(seconds)s"
+    }
+}
+
 public struct PortlyStatus: Codable {
     public var version: String
     public var apiPort: Int
     public var globalMemoryLimitBytes: UInt64?
     public var projects: [ProjectStatus]
+    /// Commands supervised for agents during this app session. Not projects:
+    /// they never persist in `config.json` and never show in the sidebar.
+    public var temporaryJobs: [TemporaryJobStatus]
 
     public init(
         version: String,
         apiPort: Int,
         globalMemoryLimitBytes: UInt64? = nil,
-        projects: [ProjectStatus]
+        projects: [ProjectStatus],
+        temporaryJobs: [TemporaryJobStatus] = []
     ) {
         self.version = version
         self.apiPort = apiPort
         self.globalMemoryLimitBytes = globalMemoryLimitBytes
         self.projects = projects
+        self.temporaryJobs = temporaryJobs
+    }
+
+    /// An older app answers without the jobs; the CLI keeps talking to it.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        version = try container.decode(String.self, forKey: .version)
+        apiPort = try container.decode(Int.self, forKey: .apiPort)
+        globalMemoryLimitBytes = try container.decodeIfPresent(UInt64.self, forKey: .globalMemoryLimitBytes)
+        projects = try container.decode([ProjectStatus].self, forKey: .projects)
+        temporaryJobs = try container.decodeIfPresent([TemporaryJobStatus].self, forKey: .temporaryJobs) ?? []
     }
 }
 

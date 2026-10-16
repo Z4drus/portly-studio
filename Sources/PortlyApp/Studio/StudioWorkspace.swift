@@ -57,6 +57,9 @@ final class StudioWorkspace: ObservableObject {
     @Published var renameRequest: String?
     /// The session's toolbar menu asked to rename it in the session bar.
     @Published var sessionBarRenameRequest: String?
+    /// True while the free terminal is on screen: its tabs count as seen,
+    /// and the keyboard commands go to them.
+    @Published var terminalWorkspaceVisible = false
     private var reopenedAtLaunch = false
     private var preparedSidebar = false
     /// Seconds until the next idle-project sweep, counted by the activity ticker.
@@ -65,6 +68,11 @@ final class StudioWorkspace: ObservableObject {
     private let store: StudioStore
     private var paneRuntimes: [String: TerminalPaneRuntime] = [:]
     private var quickRuntimes: [String: TerminalPaneRuntime] = [:]
+    /// The free terminal's shells, by tab id.
+    private var tabRuntimes: [String: TerminalPaneRuntime] = [:]
+
+    /// The project id the free terminal's shells report: none of the real ones.
+    static let terminalWorkspaceProjectID = "portly-terminal"
 
     private var keyMonitor: Any?
     private var activityTicker: Timer?
@@ -271,7 +279,7 @@ final class StudioWorkspace: ObservableObject {
     private func evaluateActivity(now: Date = Date()) {
         var next = paneActivity
         var changed = false
-        for (id, runtime) in paneRuntimes {
+        for (id, runtime) in paneRuntimes.merging(tabRuntimes, uniquingKeysWith: { first, _ in first }) {
             let working = runtime.isProducingOutput(within: KeepAwake.workingWindow, now: now)
             let previous = paneActivity[id] ?? .idle
             var state = previous
@@ -286,9 +294,11 @@ final class StudioWorkspace: ObservableObject {
                 next[id] = state
                 changed = true
             }
-            if working { touchProject(runtime.projectID, now: now) }
+            if working, runtime.projectID != Self.terminalWorkspaceProjectID {
+                touchProject(runtime.projectID, now: now)
+            }
         }
-        for id in next.keys where paneRuntimes[id] == nil {
+        for id in next.keys where paneRuntimes[id] == nil && tabRuntimes[id] == nil {
             next.removeValue(forKey: id)
             changed = true
         }
@@ -301,8 +311,12 @@ final class StudioWorkspace: ObservableObject {
     }
 
     private func isOnScreen(paneID: String) -> Bool {
+        guard NSApp.isActive else { return false }
+        if tabRuntimes[paneID] != nil {
+            return terminalWorkspaceVisible && config.activeTerminalTabID == paneID
+        }
         guard let sessionID = activeSessionID, let session = session(sessionID) else { return false }
-        return session.layout.contains(paneID) && NSApp.isActive
+        return session.layout.contains(paneID)
     }
 
     func activity(for paneID: String) -> PaneActivity {
@@ -323,8 +337,154 @@ final class StudioWorkspace: ObservableObject {
     func workingPaneCount(now: Date = Date(), agentsOnly: Bool = false) -> Int {
         let all = agentsOnly
             ? paneRuntimes.values.filter { $0.kind == .agent }
-            : Array(paneRuntimes.values) + Array(quickRuntimes.values)
+            : Array(paneRuntimes.values) + Array(quickRuntimes.values) + Array(tabRuntimes.values)
         return all.filter { $0.isProducingOutput(within: KeepAwake.workingWindow, now: now) }.count
+    }
+
+    // MARK: - Free terminal
+
+    var terminalTabs: [TerminalTab] { config.terminalTabs }
+
+    /// The tab on show: the one last selected, or the first.
+    var activeTerminalTab: TerminalTab? {
+        config.terminalTabs.first { $0.id == config.activeTerminalTabID } ?? config.terminalTabs.first
+    }
+
+    var terminalFontSize: Double { config.terminalFontSize ?? config.fontSize }
+
+    /// True while a free-terminal shell is streaming output, for the sidebar.
+    var isTerminalWorkspaceWorking: Bool {
+        config.terminalTabs.contains { activity(for: $0.id) == .working }
+    }
+
+    /// A new tab next to the active one, starting in `directory` or at home.
+    @discardableResult
+    func createTerminalTab(directory: String? = nil) -> TerminalTab {
+        let tab = TerminalTab(lastDirectory: directory)
+        mutate {
+            $0.terminalTabs = TerminalTabs.inserting(tab, into: $0.terminalTabs, after: $0.activeTerminalTabID)
+            $0.activeTerminalTabID = tab.id
+        }
+        return tab
+    }
+
+    func selectTerminalTab(_ id: String) {
+        guard config.terminalTabs.contains(where: { $0.id == id }) else { return }
+        if config.activeTerminalTabID != id {
+            mutate { $0.activeTerminalTabID = id }
+        }
+        DispatchQueue.main.async { self.tabRuntimes[id]?.focus() }
+    }
+
+    func selectTerminalTab(at index: Int) {
+        guard config.terminalTabs.indices.contains(index) else { return }
+        selectTerminalTab(config.terminalTabs[index].id)
+    }
+
+    func selectAdjacentTerminalTab(offset: Int) {
+        guard let next = TerminalTabs.adjacent(to: config.activeTerminalTabID, by: offset, in: config.terminalTabs) else { return }
+        selectTerminalTab(next)
+    }
+
+    func closeTerminalTab(_ id: String) {
+        tabRuntimes.removeValue(forKey: id)?.terminate()
+        let result = TerminalTabs.removing(id, from: config.terminalTabs, active: config.activeTerminalTabID)
+        mutate {
+            $0.terminalTabs = result.tabs
+            $0.activeTerminalTabID = result.active
+        }
+        if let next = result.active {
+            DispatchQueue.main.async { self.tabRuntimes[next]?.focus() }
+        }
+    }
+
+    func closeOtherTerminalTabs(_ id: String) {
+        for tab in config.terminalTabs where tab.id != id {
+            tabRuntimes.removeValue(forKey: tab.id)?.terminate()
+        }
+        mutate {
+            $0.terminalTabs = $0.terminalTabs.filter { $0.id == id }
+            $0.activeTerminalTabID = id
+        }
+    }
+
+    /// Nil, or a blank name, goes back to the automatic title.
+    func renameTerminalTab(_ id: String, to name: String?) {
+        let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        mutate { config in
+            guard let index = config.terminalTabs.firstIndex(where: { $0.id == id }) else { return }
+            config.terminalTabs[index].name = trimmed.isEmpty ? nil : trimmed
+        }
+    }
+
+    func moveTerminalTab(_ id: String, onto targetID: String) {
+        let next = TerminalTabs.moving(id, onto: targetID, in: config.terminalTabs)
+        guard next != config.terminalTabs else { return }
+        mutate { $0.terminalTabs = next }
+    }
+
+    func moveTerminalTab(_ id: String, by offset: Int) {
+        guard let index = config.terminalTabs.firstIndex(where: { $0.id == id }),
+              config.terminalTabs.indices.contains(index + offset) else { return }
+        moveTerminalTab(id, onto: config.terminalTabs[index + offset].id)
+    }
+
+    func adjustTerminalFontSize(by delta: Double) {
+        let next = min(max(terminalFontSize + delta, StudioConfig.minimumFontSize), StudioConfig.maximumFontSize)
+        mutate { $0.terminalFontSize = next }
+        for runtime in tabRuntimes.values { runtime.setFontSize(CGFloat(next)) }
+    }
+
+    func resetTerminalFontSize() {
+        mutate { $0.terminalFontSize = nil }
+        for runtime in tabRuntimes.values { runtime.setFontSize(CGFloat(config.fontSize)) }
+    }
+
+    /// The live shell behind a tab, spawned on first request in the folder
+    /// the tab was last seen in, or at home.
+    func terminalTabRuntime(for tab: TerminalTab) -> TerminalPaneRuntime {
+        if let existing = tabRuntimes[tab.id] { return existing }
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let directory = tab.lastDirectory.flatMap { FileManager.default.fileExists(atPath: $0) ? $0 : nil } ?? home
+        let runtime = TerminalPaneRuntime(
+            id: tab.id,
+            projectID: Self.terminalWorkspaceProjectID,
+            projectRoot: directory,
+            kind: .shell,
+            launchCommand: nil,
+            initialTitle: "Terminal",
+            fontSize: CGFloat(terminalFontSize)
+        )
+        runtime.onCloseShortcut = { [weak self] runtime in
+            self?.closeTerminalTab(runtime.id)
+        }
+        runtime.onTitleChange = { [weak self] _ in self?.bump() }
+        runtime.onDirectoryChange = { [weak self] runtime in
+            guard let self, let directory = runtime.currentDirectory else { return }
+            self.mutate { config in
+                guard let index = config.terminalTabs.firstIndex(where: { $0.id == runtime.id }),
+                      config.terminalTabs[index].lastDirectory != directory else { return }
+                config.terminalTabs[index].lastDirectory = directory
+            }
+        }
+        runtime.onExit = { [weak self] _ in self?.bump() }
+        tabRuntimes[tab.id] = runtime
+        return runtime
+    }
+
+    func existingTerminalTabRuntime(_ id: String) -> TerminalPaneRuntime? {
+        tabRuntimes[id]
+    }
+
+    /// Spawn every tab's shell, as iTerm restores all of its tabs at once,
+    /// so switching between them is instant and each reopens in its folder.
+    func warmTerminalTabs() {
+        for tab in config.terminalTabs {
+            let runtime = terminalTabRuntime(for: tab)
+            guard !runtime.hasStarted else { continue }
+            runtime.muteActivity(for: 8)
+            _ = runtime.terminalView()
+        }
     }
 
     /// Respawn every session so the app comes back where it was: shells at the
@@ -351,15 +511,22 @@ final class StudioWorkspace: ObservableObject {
     /// ⌘W closes the focused terminal instead of the window, iTerm-style. A
     /// local monitor sees the key before the menu bar does.
     private func installKeyMonitor() {
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             // Server terminals are plain `TerminalView`s and need this too.
             if let terminal = event.window?.firstResponder as? TerminalView {
                 TerminalOptionKey.prepare(terminal, for: event)
             }
             guard let view = event.window?.firstResponder as? StudioTerminalView else { return event }
+            view.onKeyDown?()
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             if flags == [.command], event.charactersIgnoringModifiers == "w",
                let handler = view.onCloseShortcut, handler() {
+                return nil
+            }
+            // ⌘1…⌘9 jump between the free terminal's tabs, as in a browser.
+            if flags == [.command], let self, self.terminalWorkspaceVisible,
+               let digit = event.charactersIgnoringModifiers.flatMap(Int.init), (1...9).contains(digit) {
+                self.selectTerminalTab(at: digit - 1)
                 return nil
             }
             // keyCode 36 is Return; ⇧↩ must not send the message.
@@ -715,12 +882,18 @@ final class StudioWorkspace: ObservableObject {
             for runtime in quickRuntimes.values {
                 runtime.setFontSize(CGFloat(config.fontSize))
             }
+            if config.terminalFontSize == nil {
+                for runtime in tabRuntimes.values {
+                    runtime.setFontSize(CGFloat(config.fontSize))
+                }
+            }
         }
     }
 
     // MARK: - Commands
 
     func perform(_ command: StudioCommand) {
+        if terminalWorkspaceVisible, performInTerminalWorkspace(command) { return }
         switch command {
         case .newSession:
             guard let projectID = activeProjectID else { NSSound.beep(); return }
@@ -773,6 +946,37 @@ final class StudioWorkspace: ObservableObject {
         }
     }
 
+    /// The same shortcuts, read as a browser reads them while the free
+    /// terminal is on screen: tabs instead of panes. False hands the command
+    /// back to the session logic.
+    private func performInTerminalWorkspace(_ command: StudioCommand) -> Bool {
+        switch command {
+        case .newPane:
+            createTerminalTab()
+        case .closePane:
+            guard let tab = activeTerminalTab else { NSSound.beep(); return true }
+            closeTerminalTab(tab.id)
+        case .focusNext:
+            selectAdjacentTerminalTab(offset: 1)
+        case .focusPrevious:
+            selectAdjacentTerminalTab(offset: -1)
+        case .biggerText:
+            adjustTerminalFontSize(by: 1)
+        case .smallerText:
+            adjustTerminalFontSize(by: -1)
+        case .resetText:
+            resetTerminalFontSize()
+        case .clearTerminal:
+            guard let tab = activeTerminalTab else { return true }
+            tabRuntimes[tab.id]?.clear()
+        case .splitRight, .splitDown, .toggleZoom:
+            NSSound.beep()
+        case .newSession, .toggleQuickTerminal, .editEnvironment:
+            return false
+        }
+        return true
+    }
+
     // MARK: - Lifecycle
 
     /// Called on quit: every shell goes down with the app.
@@ -780,6 +984,7 @@ final class StudioWorkspace: ObservableObject {
         store.saveNow()
         for runtime in paneRuntimes.values { runtime.terminate() }
         for runtime in quickRuntimes.values { runtime.terminate() }
+        for runtime in tabRuntimes.values { runtime.terminate() }
     }
 
     // MARK: - Mutation helpers

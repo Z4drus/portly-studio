@@ -88,6 +88,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         LoginEnvironment.resolveIfNeeded()
+        SidebarMotion.install()
         let presentation = AppPresentation.applyFromUserDefaults()
         WindowOpener.suppressMainWindowAtLaunch = presentation.usesAccessoryPolicy
     }
@@ -111,6 +112,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         UsageCenter.shared.stop()
         KeepAwake.shared.shutdown()
         StudioWorkspace.shared.terminateEverything()
+        TemporaryJobCenter.shared.terminateAll()
         Supervisor.shared.terminateEverythingSynchronously()
         control?.stop()
         return .terminateNow

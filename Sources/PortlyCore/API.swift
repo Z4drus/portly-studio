@@ -104,6 +104,41 @@ public enum PortlyAPI {
         }
     }
 
+    public struct RunTemporaryRequest: Codable {
+        public var name: String
+        public var command: String
+        public var directory: String
+        public var port: Int?
+        public var env: [String: String]?
+        public var timeoutSeconds: Int?
+
+        public init(
+            name: String,
+            command: String,
+            directory: String,
+            port: Int? = nil,
+            env: [String: String]? = nil,
+            timeoutSeconds: Int? = nil
+        ) {
+            self.name = name
+            self.command = command
+            self.directory = directory
+            self.port = port
+            self.env = env
+            self.timeoutSeconds = timeoutSeconds
+        }
+    }
+
+    public struct TemporaryJobRequest: Codable {
+        public var id: String
+        public init(id: String) { self.id = id }
+    }
+
+    public struct TemporaryJobListResponse: Codable {
+        public var jobs: [TemporaryJobStatus]
+        public init(jobs: [TemporaryJobStatus]) { self.jobs = jobs }
+    }
+
     public struct UpdateServerRequest: Codable {
         public var server: String
         public var name: String?
