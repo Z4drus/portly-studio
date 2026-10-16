@@ -24,11 +24,10 @@ private struct TerminalWorkspaceContent: View {
     var body: some View {
         VStack(spacing: 0) {
             TerminalTabStrip(dragging: $draggingTabID)
-            Divider()
             if let tab = workspace.activeTerminalTab {
+                // One surface for every tab: switching swaps the shell's view
+                // inside it, so nothing is torn down, resized or redrawn.
                 TerminalTabContent(tab: tab, runtime: workspace.terminalTabRuntime(for: tab))
-                    .id(tab.id)
-                    .padding(8)
             } else {
                 emptyState
             }
@@ -147,15 +146,17 @@ private struct TerminalTextSizeControl: View {
 
 // MARK: - Tab strip
 
-/// The tabs, equal in width and shrinking together as more open, with the
-/// `+` at the end. Past a dozen the strip scrolls rather than crush them.
+/// The tabs, equal in width and shrinking together as more open, shoulder
+/// to shoulder with the `+` at the end; past a dozen the strip scrolls
+/// rather than crush them. The active tab is cut from the terminal's own
+/// black and runs straight into it, Chrome-style, with no gap below.
 private struct TerminalTabStrip: View {
     @Binding var dragging: String?
 
     @ObservedObject private var workspace = StudioWorkspace.shared
 
     private static let height: CGFloat = 40
-    private static let spacing: CGFloat = 4
+    private static let edgePadding: CGFloat = 6
     private static let minimumWidth: CGFloat = 112
     private static let maximumWidth: CGFloat = 224
     private static let newTabWidth: CGFloat = 30
@@ -163,17 +164,21 @@ private struct TerminalTabStrip: View {
     var body: some View {
         GeometryReader { proxy in
             let tabs = workspace.terminalTabs
-            let available = proxy.size.width - Self.newTabWidth - Self.spacing * CGFloat(tabs.count) - 16
+            let activeID = workspace.activeTerminalTab?.id
+            let available = proxy.size.width - Self.newTabWidth - Self.edgePadding * 2
             let fitted = tabs.isEmpty ? Self.maximumWidth : available / CGFloat(tabs.count)
             let width = min(max(fitted, Self.minimumWidth), Self.maximumWidth)
             ScrollViewReader { scroller in
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: Self.spacing) {
+                    HStack(spacing: 0) {
                         ForEach(Array(tabs.enumerated()), id: \.element.id) { index, tab in
+                            let next = index + 1 < tabs.count ? tabs[index + 1].id : nil
                             TerminalTabButton(
                                 tab: tab,
                                 index: index,
-                                isActive: workspace.activeTerminalTab?.id == tab.id,
+                                isActive: activeID == tab.id,
+                                // A hairline parts two resting tabs; the active one is its own edge.
+                                showsSeparator: next != nil && next != activeID && activeID != tab.id,
                                 width: width,
                                 height: Self.height
                             )
@@ -191,17 +196,17 @@ private struct TerminalTabStrip: View {
                         }
                         newTabButton
                     }
-                    .padding(.horizontal, 8)
+                    .padding(.horizontal, Self.edgePadding)
                     .frame(minWidth: proxy.size.width, alignment: .leading)
-                    .animation(Motion.reorder, value: tabs.map(\.id))
+                    .animation(Motion.tabs, value: tabs.map(\.id))
                 }
                 .onChange(of: workspace.config.activeTerminalTabID) {
                     guard let id = workspace.config.activeTerminalTabID else { return }
-                    withAnimation(Motion.state) { scroller.scrollTo(id) }
+                    withAnimation(Motion.tabs) { scroller.scrollTo(id) }
                 }
             }
         }
-        .frame(height: Self.height + 12)
+        .frame(height: Self.height)
         .background(.regularMaterial)
         .contextMenu {
             Button("New Tab") { workspace.createTerminalTab() }
@@ -224,11 +229,12 @@ private struct TerminalTabStrip: View {
 }
 
 /// One tab: the cross on its left, the folder it is in, and what the shell
-/// is up to. Double-click the name to rename it.
+/// is up to. A click switches on the spot; a double-click renames.
 private struct TerminalTabButton: View {
     let tab: TerminalTab
     let index: Int
     let isActive: Bool
+    let showsSeparator: Bool
     let width: CGFloat
     let height: CGFloat
 
@@ -240,10 +246,17 @@ private struct TerminalTabButton: View {
     @State private var draft = ""
     @FocusState private var nameFocused: Bool
 
-    init(tab: TerminalTab, index: Int, isActive: Bool, width: CGFloat, height: CGFloat) {
+    /// Rounded at the top only: the bottom edge meets the terminal.
+    private static let shape = UnevenRoundedRectangle(
+        topLeadingRadius: 8, bottomLeadingRadius: 0, bottomTrailingRadius: 0, topTrailingRadius: 8,
+        style: .continuous
+    )
+
+    init(tab: TerminalTab, index: Int, isActive: Bool, showsSeparator: Bool, width: CGFloat, height: CGFloat) {
         self.tab = tab
         self.index = index
         self.isActive = isActive
+        self.showsSeparator = showsSeparator
         self.width = width
         self.height = height
         _runtime = ObservedObject(wrappedValue: StudioWorkspace.shared.terminalTabRuntime(for: tab))
@@ -275,6 +288,19 @@ private struct TerminalTabButton: View {
 
     private var activity: PaneActivity { workspace.activity(for: tab.id) }
 
+    /// The active tab is terminal-coloured, so its text is the terminal's.
+    private var ink: Color {
+        isActive ? Color(nsColor: TerminalTheme.foreground) : Color.primary.opacity(0.75)
+    }
+
+    private var dimInk: Color {
+        isActive ? Color(nsColor: TerminalTheme.foreground).opacity(0.55) : Color.secondary
+    }
+
+    private var pressHighlight: Color {
+        isActive ? Color(nsColor: TerminalTheme.foreground).opacity(0.14) : Color.primary.opacity(0.1)
+    }
+
     var body: some View {
         HStack(spacing: 7) {
             closeButton
@@ -285,6 +311,7 @@ private struct TerminalTabButton: View {
                     TextField("Tab name", text: $draft)
                         .textFieldStyle(.plain)
                         .font(PortlyTypography.bodyMedium)
+                        .foregroundStyle(ink)
                         .focused($nameFocused)
                         .onSubmit(commitRename)
                         .onExitCommand { editing = false }
@@ -292,13 +319,13 @@ private struct TerminalTabButton: View {
                 } else {
                     Text(title)
                         .font(PortlyTypography.bodyMedium)
-                        .foregroundStyle(isActive ? Color.primary : Color.primary.opacity(0.75))
+                        .foregroundStyle(ink)
                         .lineLimit(1)
                         .truncationMode(.tail)
                 }
                 Text(subtitle)
                     .font(PortlyTypography.metadata)
-                    .foregroundStyle(hasExited ? Color.orange : Color.secondary)
+                    .foregroundStyle(hasExited ? Color.orange : dimInk)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
@@ -307,7 +334,7 @@ private struct TerminalTabButton: View {
             if index < 9, width >= 150 {
                 Text("⌘\(index + 1)")
                     .font(PortlyTypography.metadata)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(dimInk.opacity(0.7))
                     .accessibilityHidden(true)
             }
         }
@@ -315,19 +342,21 @@ private struct TerminalTabButton: View {
         .padding(.trailing, 9)
         .frame(width: width, height: height)
         .background {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.primary.opacity(isActive ? 0.1 : hovering ? 0.05 : 0))
+            Self.shape.fill(
+                isActive ? Color(nsColor: TerminalTheme.background) : Color.primary.opacity(hovering ? 0.06 : 0)
+            )
         }
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(Color.primary.opacity(isActive ? 0.08 : 0))
+        .overlay(alignment: .trailing) {
+            if showsSeparator {
+                Rectangle()
+                    .fill(Color.primary.opacity(0.12))
+                    .frame(width: 1, height: 16)
+            }
         }
-        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .onTapGesture(count: 2) { beginRename() }
-        .onTapGesture { workspace.selectTerminalTab(tab.id) }
+        .contentShape(Rectangle())
+        .onTapGesture(perform: handleClick)
         .onHover { hovering = $0 }
         .animation(Motion.hover, value: hovering)
-        .animation(Motion.state, value: isActive)
         .animation(Motion.state, value: activity)
         .contextMenu { menu }
         .help(NSString(string: directory).abbreviatingWithTildeInPath)
@@ -339,6 +368,18 @@ private struct TerminalTabButton: View {
         .accessibilityAction(named: "Rename tab") { beginRename() }
     }
 
+    /// The first click switches at once. A double-click gesture on top of
+    /// it would make SwiftUI hold every single click back until the
+    /// double-click window had passed, so the second click is read off the
+    /// event instead.
+    private func handleClick() {
+        guard !editing else { return }
+        workspace.selectTerminalTab(tab.id)
+        if NSApp.currentEvent?.clickCount == 2 {
+            beginRename()
+        }
+    }
+
     /// Always there on the active tab, on hover elsewhere; the space it
     /// takes never changes so the title does not shift.
     private var closeButton: some View {
@@ -346,11 +387,11 @@ private struct TerminalTabButton: View {
             workspace.closeTerminalTab(tab.id)
         } label: {
             NucleoIconView(.xmark, size: 9)
-                .foregroundStyle(hoveringClose ? Color.primary : Color.secondary)
+                .foregroundStyle(hoveringClose ? ink : dimInk)
                 .frame(width: 18, height: 18)
                 .background {
                     RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(Color.primary.opacity(hoveringClose ? 0.1 : 0))
+                        .fill(hoveringClose ? pressHighlight : Color.clear)
                 }
                 .contentShape(Rectangle())
         }
@@ -380,7 +421,7 @@ private struct TerminalTabButton: View {
                 .accessibilityLabel("Finished, not seen yet")
         case .idle:
             Circle()
-                .fill(hasExited ? Color.orange : runtime.isRunning ? ServerState.running.color : Color.secondary)
+                .fill(hasExited ? Color.orange : runtime.isRunning ? ServerState.running.color : dimInk)
                 .frame(width: 6, height: 6)
                 .opacity(runtime.isRunning || hasExited ? 0.9 : 0.35)
                 .transition(.opacity)
@@ -470,9 +511,26 @@ private struct TabReorderDropDelegate: DropDelegate {
 
 // MARK: - Tab content
 
-/// The active tab's shell in the same surface a session pane uses, with the
-/// "shell exited" card when it is gone.
+/// The active tab's shell, full bleed under the strip the way iTerm shows
+/// it, with the "shell exited" card when it is gone. The surface itself
+/// never changes identity: a tab switch only swaps the view it holds.
 private struct TerminalTabContent: View {
+    let tab: TerminalTab
+    let runtime: TerminalPaneRuntime
+
+    var body: some View {
+        ZStack {
+            StudioTerminalHost(runtime: runtime)
+            ShellExitedCard(tab: tab, runtime: runtime)
+                .id(tab.id)
+        }
+        .background(Color(nsColor: TerminalTheme.background))
+    }
+}
+
+/// Fades in when this tab's shell exits; swapping to another tab shows or
+/// hides it outright, since the card belongs to the tab, not the surface.
+private struct ShellExitedCard: View {
     let tab: TerminalTab
     @ObservedObject var runtime: TerminalPaneRuntime
 
@@ -480,25 +538,14 @@ private struct TerminalTabContent: View {
 
     var body: some View {
         ZStack {
-            StudioTerminalHost(runtime: runtime)
             if !runtime.isRunning {
-                exitedOverlay
-                    .transition(.opacity)
+                card.transition(.opacity)
             }
         }
-        .background(Color(nsColor: TerminalTheme.background))
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(Color(nsColor: TerminalTheme.border))
-        }
         .animation(Motion.paneSwap, value: runtime.isRunning)
-        .onAppear {
-            DispatchQueue.main.async { runtime.focus() }
-        }
     }
 
-    private var exitedOverlay: some View {
+    private var card: some View {
         VStack(spacing: 10) {
             NucleoIconView(.power, size: 26)
                 .foregroundStyle(Color(nsColor: TerminalTheme.foreground).opacity(0.5))

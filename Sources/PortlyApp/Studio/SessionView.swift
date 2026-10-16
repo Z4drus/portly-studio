@@ -344,8 +344,7 @@ private struct PaneView: View {
                     AgentLaunchOverlay(
                         agentName: runtime.agentName,
                         iconID: kindIcon,
-                        resumes: runtime.launchResumesConversation,
-                        location: runtime.projectRoot
+                        resumes: runtime.launchResumesConversation
                     )
                     .transition(AgentLaunchOverlay.transition)
                 }

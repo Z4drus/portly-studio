@@ -6,14 +6,13 @@ import SwiftUI
 /// resumed. It sits there for the second or two Claude Code takes to draw its
 /// first screen, then lifts.
 ///
-/// No elapsed time, no percentage: nothing here is waiting on an answer.
+/// No elapsed time, no percentage, no folder: nothing here is waiting on an
+/// answer, and the pane header already says where the agent runs.
 struct AgentLaunchOverlay: View {
     let agentName: String
     /// The agent's glyph, for agents without a mascot of their own.
     let iconID: String
     let resumes: Bool
-    /// The folder the agent starts in.
-    let location: String
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -31,11 +30,6 @@ struct AgentLaunchOverlay: View {
         resumes ? "Resuming the conversation" : "Starting \(agentName)"
     }
 
-    private var detail: String {
-        let folder = NSString(string: location).abbreviatingWithTildeInPath
-        return resumes ? "\(agentName) · \(folder)" : "New chat · \(folder)"
-    }
-
     var body: some View {
         ZStack {
             Color(nsColor: TerminalTheme.background)
@@ -51,17 +45,9 @@ struct AgentLaunchOverlay: View {
                                 .fill(Color.accentColor.opacity(0.12))
                         }
                 }
-                VStack(spacing: 8) {
-                    HStack(spacing: 10) {
-                        PixelGridLoader(animated: !reduceMotion)
-                        ShimmerLabel(headline, animated: !reduceMotion)
-                    }
-                    Text(detail)
-                        .font(PortlyTypography.metadata)
-                        .foregroundStyle(Color(nsColor: TerminalTheme.foreground).opacity(0.45))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .frame(maxWidth: 360)
+                HStack(spacing: 9) {
+                    PixelGridLoader(animated: !reduceMotion)
+                    ShimmerLabel(headline, animated: !reduceMotion)
                 }
             }
             .padding(24)
@@ -134,11 +120,12 @@ struct ClaudeMascot: View {
 }
 
 /// A 3 × 3 grid of pixels with a chevron-shaped wave driving across it. The
-/// cycle is shorter than the sweep, so two fronts are always in flight.
+/// cycle is shorter than the sweep, so two fronts are always in flight. It
+/// is the size of a lowercase letter next to the label, not a badge.
 struct PixelGridLoader: View {
     var animated = true
-    var cell: CGFloat = 5
-    var gap: CGFloat = 2
+    var cell: CGFloat = 2.5
+    var gap: CGFloat = 1.25
     var tint: Color = Color(nsColor: TerminalTheme.foreground)
 
     private static let cycle: Double = 0.65
@@ -170,7 +157,7 @@ struct PixelGridLoader: View {
         return ZStack(alignment: .topLeading) {
             ForEach(0..<9, id: \.self) { index in
                 let row = index / 3, column = index % 3
-                RoundedRectangle(cornerRadius: 1, style: .continuous)
+                RoundedRectangle(cornerRadius: 0.5, style: .continuous)
                     .fill(tint)
                     .opacity(opacity(index: index, time: time))
                     .frame(width: cell, height: cell)

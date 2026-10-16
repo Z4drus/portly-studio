@@ -20,6 +20,10 @@ enum Motion {
     /// Full-pane content swaps (stopped placeholder to live terminal).
     static let paneSwap = Animation.easeOut(duration: 0.2)
 
+    /// Terminal tabs opening, closing and re-fitting the strip. Switching
+    /// between them is not animated at all; only the strip settling is.
+    static let tabs = Animation.easeOut(duration: 0.12)
+
     /// Sidebar rows changing position when a project starts or stops. Movement
     /// already on screen, so it accelerates and brakes like a real object.
     static let reorder = Animation.timingCurve(0.645, 0.045, 0.355, 1, duration: 0.28)
