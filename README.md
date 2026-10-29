@@ -126,6 +126,30 @@ the maintainer's Apple ID and team identifier out of every downloaded copy.
 - **Environment files** — every `.env*` at the project root in a floating panel (⇧⌘E) with dotenv
   colouring (keys, strings, comments, `${vars}`, unclosed quotes flagged), plus "create `.env` from
   `.env.example`" and the reverse.
+- **Git at a glance** — left of the mug, on every screen of a project whose folder is a
+  repository: the branch glyph, the lines added and removed since the last commit (green and
+  red), and how many commits wait to be pushed. The popover below it lists the changed files
+  with their status mark and line counts, greys out the `.env*` files Git ignores, and draws the
+  recent history as a lane graph: filled dots are on a remote, hollow ones are still only here,
+  branch names ride along as badges. Nothing in it drives Git; one button types the request you
+  make several times a day into the focused terminal, *commit and push everything, including the
+  changes that are not yours*, and the agent does it. The readout refreshes when files change under
+  the project (FSEvents, build folders ignored), every 20 s as a safety net, and whenever it opens.
+- **Talvo** — Bleeze's own project tool (projects, milestones, issues, documents, Linear-style)
+  mirrored in Portly, for a Portly linked to a Talvo server. Settings → Talvo takes the server
+  address and a per-device token created in Talvo (*Appareils* in the account menu); the token lives
+  in the keychain and nothing of it is in the repository, so a public build has no Talvo at all.
+  Once connected, a Talvo button at the left of the toolbar links the project on screen to one of
+  your Talvo projects and then shows its name, its open and urgent issues and its health. Clicking it
+  covers the detail area with the project: issues by status with search and filters (open, mine,
+  urgent), the selected issue in full (properties, Markdown description, sub-issues, relations,
+  links, comments, activity), and the project tab (description, milestones with progress, members,
+  links, updates, documents). A token with the write scope can change an issue's status and comment;
+  *Tell the agent* hands an issue to the focused terminal by its identifier. Changes made in Talvo
+  show within a second: Portly keeps one event stream open, Talvo sends a sequence number per change,
+  and Portly fetches only what moved since the one it holds, a few kilobytes an hour. A copy of the
+  light records waits in `~/.config/portly/talvo-cache.json` so a relaunch asks for a delta, not the
+  whole workspace; long texts are read when opened.
 - **Keep awake** — the mug in the toolbar arms it, and it stays armed across launches. It holds the
   Mac awake whenever an agent works — a Claude Code session anywhere on the Mac whose own status says
   `busy` (`~/.claude/sessions/<pid>.json`), or a Portly terminal producing output — lets go once
@@ -367,7 +391,8 @@ Compared to upstream Portly:
 
 - **Added** — coding sessions and split agent terminals, the free terminal with its tabs, the
   agent launch screen, workspace trust, the quick terminal, the `.env` panel, keep-awake, the drop
-  zone, Nucleo icons, sidebar search, menu-bar-only mode, and the AI usage rings.
+  zone, the Git readout and its history graph, the Talvo mirror, Nucleo icons, sidebar search,
+  menu-bar-only mode, and the AI usage rings.
 - **Changed** — temporary jobs (`portly temp` / `portly wait`) are headless: an agent's tool,
   never a sidebar entry; server actions run beside a server, streaming into its terminal.
 - **Removed** — the Sparkle auto-updater and its feed (which would replace this build with the

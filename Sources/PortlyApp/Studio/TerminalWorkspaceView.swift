@@ -103,18 +103,13 @@ private struct TerminalWorkspaceToolbar: ToolbarContent {
 }
 
 private struct TerminalShortcutsButton: View {
-    @State private var showing = false
-
     var body: some View {
         Button {
-            showing.toggle()
+            ToolbarPopover.toggle(id: "shortcuts") { ShortcutsHelpPopover() }
         } label: {
             NucleoLabel("Shortcuts", icon: .info)
         }
         .help("Keyboard shortcuts")
-        .popover(isPresented: $showing, arrowEdge: .bottom) {
-            ShortcutsHelpPopover()
-        }
     }
 }
 

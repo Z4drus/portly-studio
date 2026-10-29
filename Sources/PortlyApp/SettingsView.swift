@@ -22,6 +22,8 @@ struct SettingsView: View {
                 .tabItem { NucleoLabel("Code", icon: .terminal) }
             UsageSettingsView()
                 .tabItem { NucleoLabel("AI Usage", icon: .sparkle) }
+            TalvoSettingsView()
+                .tabItem { NucleoLabel("Talvo", icon: .talvo) }
         }
         .frame(width: 680, height: 620)
     }

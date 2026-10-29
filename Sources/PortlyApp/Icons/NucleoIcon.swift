@@ -341,6 +341,14 @@ enum AppIcon: String, CaseIterable {
     case magnifierMinus = "filtering-sorting/magnifier-minus"
     case hardDrive = "technology-devices/hard-drive"
     case temperature = "weather/temperature"
+    case gitBranch = "design-development/code-branch"
+    case gitCommit = "design-development/code-commit"
+    case gitCompare = "design-development/code-compare"
+    case gitMerge = "design-development/code-merge"
+    case talvo = "ui-layout/list-todo"
+    case milestone = "business-finance/goal-flag"
+    case userGroup = "users/user-group"
+    case document = "files/clipboard-list"
 }
 
 /// Old configs store SF Symbol names. Map the ones Portly used to ship with,

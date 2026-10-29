@@ -60,6 +60,8 @@ final class StudioWorkspace: ObservableObject {
     /// True while the free terminal is on screen: its tabs count as seen,
     /// and the keyboard commands go to them.
     @Published var terminalWorkspaceVisible = false
+    /// The project whose Talvo mirror covers the detail area.
+    @Published var talvoPanelProjectID: String?
     private var reopenedAtLaunch = false
     private var preparedSidebar = false
     /// Seconds until the next idle-project sweep, counted by the activity ticker.
@@ -588,10 +590,42 @@ final class StudioWorkspace: ObservableObject {
             removeSession(session.id)
         }
         quickRuntimes.removeValue(forKey: projectID)?.terminate()
+        if talvoPanelProjectID == projectID { talvoPanelProjectID = nil }
         mutate {
             $0.projectActivity.removeValue(forKey: projectID)
             $0.archivedProjects.remove(projectID)
             $0.projectOrder.removeAll { $0 == projectID }
+            $0.talvoLinks.removeValue(forKey: projectID)
+        }
+    }
+
+    // MARK: - Talvo
+
+    /// The Talvo project a Portly project mirrors, if it was linked.
+    func talvoProjectID(for projectID: String) -> String? {
+        config.talvoLinks[projectID]
+    }
+
+    /// Link a Portly project to a Talvo project, or unlink it with nil.
+    func linkTalvoProject(_ talvoProjectID: String?, to projectID: String) {
+        mutate {
+            if let talvoProjectID {
+                $0.talvoLinks[projectID] = talvoProjectID
+            } else {
+                $0.talvoLinks.removeValue(forKey: projectID)
+            }
+        }
+        if talvoProjectID == nil, talvoPanelProjectID == projectID { talvoPanelProjectID = nil }
+    }
+
+    /// Show or hide the Talvo mirror of a project over the detail area.
+    func toggleTalvoPanel(projectID: String) {
+        if talvoPanelProjectID == projectID {
+            talvoPanelProjectID = nil
+        } else {
+            quickTerminalVisible = false
+            envPanelProjectID = nil
+            talvoPanelProjectID = projectID
         }
     }
 
@@ -841,6 +875,7 @@ final class StudioWorkspace: ObservableObject {
             quickTerminalVisible = false
         } else {
             envPanelProjectID = nil
+            talvoPanelProjectID = nil
             quickTerminalVisible = true
         }
     }
@@ -850,8 +885,17 @@ final class StudioWorkspace: ObservableObject {
             envPanelProjectID = nil
         } else {
             quickTerminalVisible = false
+            talvoPanelProjectID = nil
             envPanelProjectID = projectID
         }
+    }
+
+    /// Whether `insertIntoFocusedTerminal` has somewhere to type: the quick
+    /// terminal when it shows, else a live focused pane of the session on screen.
+    var canInsertIntoFocusedTerminal: Bool {
+        if quickTerminalVisible, let projectID = activeProjectID, quickRuntimes[projectID]?.isRunning == true { return true }
+        guard let sessionID = activeSessionID else { return false }
+        return focusedRuntime(sessionID: sessionID)?.isRunning == true
     }
 
     /// Type text into the focused pane of the active session (or the quick

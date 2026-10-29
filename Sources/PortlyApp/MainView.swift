@@ -18,6 +18,8 @@ struct MainView: View {
     @Environment(\.openWindow) private var openWindow
     @ObservedObject private var appSelection = AppSelection.shared
     @ObservedObject private var workspace = StudioWorkspace.shared
+    @ObservedObject private var gitCenter = GitCenter.shared
+    @ObservedObject private var talvoPresence = TalvoCenter.shared.presence
     @StateObject private var agentSetup = AgentSetup()
     @StateObject private var systemAccess = SystemAccessStatus()
     @AppStorage("agentOnboardingDismissed") private var agentOnboardingDismissed = false
@@ -57,6 +59,18 @@ struct MainView: View {
                     }
                 }
                 .projectDropTarget(currentProject)
+                .overlay {
+                    if talvoPresence.isConfigured,
+                       let projectID = workspace.talvoPanelProjectID,
+                       let project = storedProject(projectID),
+                       let talvoID = workspace.talvoProjectID(for: projectID) {
+                        TalvoPanel(project: project, talvoProjectID: talvoID)
+                            .id(talvoID)
+                            .padding(10)
+                            .transition(.opacity.combined(with: .scale(scale: 0.985)))
+                    }
+                }
+                .animation(Motion.banner, value: workspace.talvoPanelProjectID)
                 .overlay(alignment: .topTrailing) {
                     if let projectID = workspace.envPanelProjectID, let project = storedProject(projectID) {
                         EnvEditorPanel(project: project)
@@ -73,6 +87,22 @@ struct MainView: View {
                 .animation(Motion.banner, value: workspace.envPanelProjectID)
         }
         .toolbar {
+            // Talvo at the left: the project this one mirrors, when a Talvo
+            // token is set on this Mac.
+            if let project = currentProject, talvoPresence.isConfigured {
+                ToolbarItem(placement: .navigation) {
+                    TalvoToolbarButton(project: project)
+                        .id(project.id)
+                }
+            }
+            // The Git readout belongs to the project on screen, whatever the
+            // screen: its servers, a coding session, or the project itself.
+            if let root = currentProject?.root, gitCenter.isRepository(root: root) {
+                ToolbarItem(placement: .primaryAction) {
+                    GitToolbarButton(projectRoot: root)
+                        .id(root)
+                }
+            }
             ToolbarItem(placement: .primaryAction) {
                 KeepAwakeToolbarButton()
             }
@@ -105,6 +135,10 @@ struct MainView: View {
             // than show on screen with no row of its own.
             if let project = currentProject, workspace.isArchived(project.id) {
                 workspace.unarchiveProject(project.id)
+            }
+            // The Talvo panel belongs to one project: leaving it closes it.
+            if let open = workspace.talvoPanelProjectID, open != currentProject?.id {
+                workspace.talvoPanelProjectID = nil
             }
             syncWorkspaceContext()
             rememberSelection()

@@ -196,4 +196,20 @@ extension Date {
         if hours < 24 { return remainder == 0 ? "\(hours)h" : "\(hours)h \(remainder)m" }
         return "\(hours / 24)d \(hours % 24)h"
     }
+
+    /// "now", "3m", "2h", "5d", "3w", "4mo", "2y": how long ago, in one
+    /// unit, for a list of commits or events.
+    var compactAge: String {
+        let seconds = Int(Date().timeIntervalSince(self))
+        if seconds < 45 { return "now" }
+        let minutes = seconds / 60
+        if minutes < 60 { return "\(max(minutes, 1))m" }
+        let hours = minutes / 60
+        if hours < 24 { return "\(hours)h" }
+        let days = hours / 24
+        if days < 7 { return "\(days)d" }
+        if days < 30 { return "\(days / 7)w" }
+        if days < 365 { return "\(days / 30)mo" }
+        return "\(days / 365)y"
+    }
 }

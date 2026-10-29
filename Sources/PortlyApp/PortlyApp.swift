@@ -104,6 +104,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The AI usage rings: the notch on the screen edge and the sidebar
         // section read from the same store.
         UsageCenter.shared.start()
+        // Talvo, when a device token was saved on this Mac.
+        TalvoCenter.shared.start()
         // Private fork: no launch telemetry is sent anywhere.
     }
 

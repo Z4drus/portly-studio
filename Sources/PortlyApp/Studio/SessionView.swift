@@ -220,19 +220,16 @@ private struct SessionToolbar: ToolbarContent {
     }
 }
 
+/// Opens the cheat sheet through `ToolbarPopover`, so no state lives in the
+/// toolbar item: a `.popover` binding here flashed the whole bar on macOS 27.
 private struct ShortcutsToolbarButton: View {
-    @State private var showingHelp = false
-
     var body: some View {
         Button {
-            showingHelp.toggle()
+            ToolbarPopover.toggle(id: "shortcuts") { ShortcutsHelpPopover() }
         } label: {
             NucleoLabel("Shortcuts", icon: .info)
         }
         .help("Keyboard shortcuts")
-        .popover(isPresented: $showingHelp, arrowEdge: .bottom) {
-            ShortcutsHelpPopover()
-        }
     }
 }
 
