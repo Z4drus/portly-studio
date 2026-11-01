@@ -82,6 +82,19 @@ struct GitFileChange: Identifiable, Hashable {
     }
 }
 
+/// A name pointing at a commit, as the history shows it.
+struct GitRef: Hashable {
+    enum Kind: Hashable {
+        case branch
+        /// `origin/main`: where the remote was at the last fetch.
+        case remote
+        case tag
+    }
+
+    var name: String
+    var kind: Kind
+}
+
 /// One commit of the recent history.
 struct GitCommit: Identifiable, Hashable {
     var hash: String
@@ -97,14 +110,32 @@ struct GitCommit: Identifiable, Hashable {
     var id: String { hash }
     var shortHash: String { String(hash.prefix(7)) }
 
-    /// `HEAD -> main` becomes `main`; the `tag: ` prefix is dropped.
-    var branchNames: [String] {
-        refs.compactMap { ref in
-            if ref.hasPrefix("HEAD -> ") { return String(ref.dropFirst("HEAD -> ".count)) }
-            if ref == "HEAD" { return nil }
-            if ref.hasPrefix("tag: ") { return String(ref.dropFirst("tag: ".count)) }
-            return ref
+    /// The badges beside the subject: branches first, then remote branches,
+    /// then tags. `HEAD -> main` is `main`; `origin/main` is left out when
+    /// `main` sits on the same commit (the header already says they are in
+    /// sync), and so is `origin/HEAD`, which only points at the default branch.
+    var refBadges: [GitRef] {
+        var branches: [GitRef] = []
+        var remotes: [GitRef] = []
+        var tags: [GitRef] = []
+        for ref in refs {
+            if ref == "HEAD" || ref.hasSuffix("/HEAD") { continue }
+            if ref.hasPrefix("tag: ") {
+                tags.append(GitRef(name: String(ref.dropFirst("tag: ".count)), kind: .tag))
+            } else if ref.hasPrefix("HEAD -> ") {
+                branches.append(GitRef(name: String(ref.dropFirst("HEAD -> ".count)), kind: .branch))
+            } else if ref.contains("/") {
+                remotes.append(GitRef(name: ref, kind: .remote))
+            } else {
+                branches.append(GitRef(name: ref, kind: .branch))
+            }
         }
+        let local = Set(branches.map(\.name))
+        remotes.removeAll { remote in
+            guard let slash = remote.name.firstIndex(of: "/") else { return false }
+            return local.contains(String(remote.name[remote.name.index(after: slash)...]))
+        }
+        return branches + remotes + tags
     }
 
     var isHead: Bool {

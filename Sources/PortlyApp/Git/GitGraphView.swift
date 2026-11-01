@@ -19,7 +19,7 @@ struct GitGraphView: View {
             ForEach(Array(layout.rows.enumerated()), id: \.element.commit.id) { index, row in
                 GitGraphRowView(
                     row: row,
-                    isFirst: index == 0,
+                    previous: index > 0 ? layout.rows[index - 1] : nil,
                     isLast: index == layout.rows.count - 1,
                     graphWidth: graphWidth
                 )
@@ -44,13 +44,21 @@ struct GitGraphView: View {
 
 private struct GitGraphRowView: View {
     let row: GitGraph.Row
-    let isFirst: Bool
+    /// The row above: its lines end at this row's top edge, and this row
+    /// carries each one on to where it goes.
+    let previous: GitGraph.Row?
     let isLast: Bool
     let graphWidth: CGFloat
+
+    /// Even widths on whole-point centres: crisp on any screen.
+    private static let lineWidth: CGFloat = 2
+    private static let lineOpacity = 0.8
+    private static let maxBadges = 2
 
     private var commit: GitCommit { row.commit }
 
     var body: some View {
+        let badges = commit.refBadges
         HStack(spacing: 8) {
             Canvas { context, size in
                 draw(in: &context, size: size)
@@ -58,6 +66,8 @@ private struct GitGraphRowView: View {
             .frame(width: graphWidth, height: GitGraphView.rowHeight)
             .accessibilityHidden(true)
 
+            // The subject is the only part that gives way: badges, age and
+            // hash keep their size, so a row never overflows and shifts.
             Text(commit.subject)
                 .font(PortlyTypography.body)
                 .foregroundStyle(commit.isLocalOnly ? Color.primary : Color.primary.opacity(0.82))
@@ -65,8 +75,17 @@ private struct GitGraphRowView: View {
                 .truncationMode(.tail)
                 .layoutPriority(1)
 
-            ForEach(Array(commit.branchNames.prefix(2).enumerated()), id: \.offset) { _, name in
-                refBadge(name)
+            if !badges.isEmpty {
+                HStack(spacing: 4) {
+                    ForEach(badges.prefix(Self.maxBadges), id: \.self) { refBadge($0) }
+                    if badges.count > Self.maxBadges {
+                        Text("+\(badges.count - Self.maxBadges)")
+                            .font(PortlyTypography.label)
+                            .foregroundStyle(.tertiary)
+                            .help(badges.dropFirst(Self.maxBadges).map(\.name).joined(separator: ", "))
+                    }
+                }
+                .fixedSize()
             }
 
             Spacer(minLength: 6)
@@ -83,32 +102,52 @@ private struct GitGraphRowView: View {
                 .foregroundStyle(.tertiary)
                 .monospacedDigit()
                 .frame(minWidth: 26, alignment: .trailing)
+                .fixedSize()
 
             Text(commit.shortHash)
                 .font(PortlyTypography.metadata)
-                .foregroundStyle(.quaternary)
+                .foregroundStyle(.tertiary)
+                .fixedSize()
+                .textSelection(.enabled)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .frame(height: GitGraphView.rowHeight)
         .help("\(commit.subject)\n\(commit.author) · \(commit.date.formatted(date: .abbreviated, time: .shortened))\(commit.isLocalOnly ? "\nNot pushed yet" : "")")
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(commit.subject), \(commit.author), \(commit.date.formatted(date: .abbreviated, time: .shortened))\(commit.isLocalOnly ? ", not pushed" : "")")
     }
 
-    private func refBadge(_ name: String) -> some View {
-        let isRemote = name.contains("/")
-        return Text(name)
+    /// Branches in their lane's colour, remote branches in grey, tags outlined.
+    private func refBadge(_ ref: GitRef) -> some View {
+        let lane = GitGraphView.laneColor(row.color)
+        let tint: Color = ref.kind == .branch ? lane : .secondary
+        return Text(ref.name)
             .font(PortlyTypography.label)
-            .foregroundStyle(isRemote ? Color.secondary : GitGraphView.laneColor(row.color))
+            .foregroundStyle(tint)
             .lineLimit(1)
             .truncationMode(.middle)
-            .frame(maxWidth: 110)
-            .padding(.horizontal, 5)
+            .frame(maxWidth: 120)
+            .padding(.horizontal, 6)
             .frame(height: 16)
             .background {
-                Capsule(style: .continuous)
-                    .fill((isRemote ? Color.primary : GitGraphView.laneColor(row.color)).opacity(0.1))
+                switch ref.kind {
+                case .branch:
+                    Capsule(style: .continuous).fill(lane.opacity(0.14))
+                case .remote:
+                    Capsule(style: .continuous).fill(Color.primary.opacity(0.08))
+                case .tag:
+                    Capsule(style: .continuous).strokeBorder(Color.primary.opacity(0.2))
+                }
             }
-            .help(isRemote ? "Remote branch \(name)" : "Branch \(name)")
+            .help(Self.badgeHelp(ref))
+    }
+
+    private static func badgeHelp(_ ref: GitRef) -> String {
+        switch ref.kind {
+        case .branch: return "Branch \(ref.name)"
+        case .remote: return "Remote branch \(ref.name), as of the last fetch"
+        case .tag: return "Tag \(ref.name)"
+        }
     }
 
     private func x(_ lane: Int) -> CGFloat {
@@ -116,26 +155,30 @@ private struct GitGraphRowView: View {
     }
 
     private func draw(in context: inout GraphicsContext, size: CGSize) {
-        let midY = size.height / 2
-        let lineWidth: CGFloat = 1.5
+        let midY = (size.height / 2).rounded()
 
-        // Lines arriving from the row above end at this commit's lane or run past it.
-        if !isFirst {
-            for lane in row.passingLanes {
-                var path = Path()
-                path.move(to: CGPoint(x: x(lane), y: 0))
-                path.addLine(to: CGPoint(x: x(lane), y: midY))
-                context.stroke(path, with: .color(GitGraphView.laneColor(colorOfPassingLane(lane)).opacity(0.55)), lineWidth: lineWidth)
+        // Every line in one layer, faded as a whole: where lines meet nothing
+        // darkens, and a lane keeps one shade from row to row.
+        var lines = context
+        lines.opacity = Self.lineOpacity
+        lines.drawLayer { layer in
+            // The top half carries on each line the row above ended with.
+            // Lines in the commit's own colour go last, so they win where
+            // several meet at the dot.
+            if let previous {
+                let arriving = previous.edges.filter { $0.color != row.color }
+                    + previous.edges.filter { $0.color == row.color }
+                for edge in arriving {
+                    var path = Path()
+                    path.move(to: CGPoint(x: x(edge.toLane), y: 0))
+                    path.addLine(to: CGPoint(x: x(edge.toLane), y: midY))
+                    layer.stroke(path, with: .color(GitGraphView.laneColor(edge.color)), lineWidth: Self.lineWidth)
+                }
             }
-            var into = Path()
-            into.move(to: CGPoint(x: x(row.lane), y: 0))
-            into.addLine(to: CGPoint(x: x(row.lane), y: midY))
-            context.stroke(into, with: .color(GitGraphView.laneColor(row.color).opacity(0.75)), lineWidth: lineWidth)
-        }
 
-        // Lines leaving towards the row below: straight, or bending into
-        // another lane when branches meet.
-        if !isLast {
+            // The bottom half: straight down, or bending into another lane
+            // when branches fork or meet.
+            guard !isLast else { return }
             for edge in row.edges {
                 var path = Path()
                 let from = CGPoint(x: x(edge.fromLane), y: midY)
@@ -144,18 +187,18 @@ private struct GitGraphRowView: View {
                 if edge.fromLane == edge.toLane {
                     path.addLine(to: to)
                 } else {
+                    let span = size.height - midY
                     path.addCurve(
                         to: to,
-                        control1: CGPoint(x: from.x, y: midY + (size.height - midY) * 0.9),
-                        control2: CGPoint(x: to.x, y: midY + (size.height - midY) * 0.1)
+                        control1: CGPoint(x: from.x, y: midY + span * 0.6),
+                        control2: CGPoint(x: to.x, y: midY + span * 0.4)
                     )
                 }
-                let alpha = edge.fromLane == row.lane ? 0.75 : 0.55
-                context.stroke(path, with: .color(GitGraphView.laneColor(edge.color).opacity(alpha)), lineWidth: lineWidth)
+                layer.stroke(path, with: .color(GitGraphView.laneColor(edge.color)), lineWidth: Self.lineWidth)
             }
         }
 
-        // The commit itself.
+        // The commit itself, over its lines.
         let center = CGPoint(x: x(row.lane), y: midY)
         let color = GitGraphView.laneColor(row.color)
         let radius: CGFloat = commit.isHead ? 4.5 : 3.5
@@ -167,13 +210,9 @@ private struct GitGraphRowView: View {
             context.fill(dot, with: .color(color))
         }
         if commit.isHead {
-            let ring = Path(ellipseIn: CGRect(x: center.x - radius - 2.5, y: center.y - radius - 2.5, width: (radius + 2.5) * 2, height: (radius + 2.5) * 2))
+            let ringRadius = radius + 2.5
+            let ring = Path(ellipseIn: CGRect(x: center.x - ringRadius, y: center.y - ringRadius, width: ringRadius * 2, height: ringRadius * 2))
             context.stroke(ring, with: .color(color.opacity(0.35)), lineWidth: 1)
         }
-    }
-
-    /// A passing lane keeps the colour of the edge that continues it.
-    private func colorOfPassingLane(_ lane: Int) -> Int {
-        row.edges.first { $0.fromLane == lane }?.color ?? lane
     }
 }

@@ -291,6 +291,12 @@ final class TerminalPaneRuntime: NSObject, ObservableObject, LocalProcessDelegat
 
     var hasView: Bool { view != nil }
 
+    /// The pane's shell while it runs: whatever you start in the pane descends from it.
+    var shellPID: Int32? {
+        guard let process, process.running, process.shellPid > 0 else { return nil }
+        return process.shellPid
+    }
+
     /// The agent this pane starts, for the launch screen.
     var agentName: String { defaultTitle }
 

@@ -94,6 +94,48 @@ final class ClaudeUsageResponseTests: XCTestCase {
         XCTAssertEqual(try decode(json).limitWindows().map(\.label), ["Current session", "All models"])
     }
 
+    /// The live shape since late October 2026: no session window at all, and
+    /// the Fable cap as `weekly_scoped`, named by family only. The model list
+    /// supplies the version, and a newer Fable takes over by itself.
+    func testScopedWindowIsNamedAfterTheNewestModelOfItsFamily() throws {
+        let json = """
+        { "five_hour": null,
+          "limits": [
+            { "kind": "weekly_all", "group": "weekly", "percent": 27,
+              "resets_at": "2026-11-05T02:59:59.911992+00:00", "scope": null, "is_active": true },
+            { "kind": "weekly_scoped", "group": "weekly", "percent": 11,
+              "resets_at": "2026-11-05T02:59:59.912128+00:00",
+              "scope": { "model": { "id": null, "display_name": "Fable" }, "surface": null }, "is_active": false } ] }
+        """
+        let models = """
+        { "data": [
+            { "id": "claude-opus-5-5", "display_name": "Claude Opus 5.5", "created_at": "2026-09-21T16:24:00Z" },
+            { "id": "claude-fable-5", "display_name": "Claude Fable 5", "created_at": "2026-06-07T00:00:00Z" },
+            { "id": "claude-fable-5-1", "display_name": "Claude Fable 5.1", "created_at": "2026-08-28T00:00:00Z" } ] }
+        """
+        let catalog = try XCTUnwrap(ClaudeModelCatalog.decode(Data(models.utf8)))
+        let windows = try decode(json).limitWindows(models: catalog)
+        XCTAssertEqual(windows.map(\.id), ["weekly_all", "weekly_scoped"])
+        XCTAssertEqual(windows.map(\.label), ["All models", "Fable 5.1"])
+
+        // Without the list, the family alone, never "Scoped".
+        XCTAssertEqual(try decode(json).limitWindows().last?.label, "Fable")
+    }
+
+    func testModelCatalogPicksTheNewestOfAFamily() {
+        let catalog = ClaudeModelCatalog(models: [
+            .init(id: "claude-fable-5-2", name: "Fable 5.2"),
+            .init(id: "claude-fable-5-1", name: "Fable 5.1"),
+            .init(id: "claude-opus-5-5", name: "Opus 5.5"),
+        ])
+        XCTAssertEqual(catalog.versioned("Fable"), "Fable 5.2")
+        XCTAssertEqual(catalog.versioned("fable"), "Fable 5.2")
+        XCTAssertEqual(catalog.versioned("All models"), "All models")
+        XCTAssertEqual(catalog.versioned("Fab"), "Fab", "a prefix of a family is not that family")
+        XCTAssertEqual(catalog.name(id: "claude-fable-5-1", family: "Fable"), "Fable 5.1", "an id names its exact model")
+        XCTAssertNil(catalog.name(id: nil, family: nil))
+    }
+
     func testUnknownKindsGetAReadableLabel() {
         XCTAssertEqual(ClaudeUsageResponse.label(forKind: "weekly_mythos"), "Mythos")
         XCTAssertEqual(ClaudeUsageResponse.label(forKind: "weekly_cowork"), "Cowork")

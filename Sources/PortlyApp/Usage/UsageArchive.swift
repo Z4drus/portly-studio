@@ -87,6 +87,23 @@ struct UsageArchive {
         defaults.set(data, forKey: key)
     }
 
+    // MARK: - Claude model names
+
+    private var modelsKey: String { "usage.claudeModels" }
+
+    /// The last model list read, so a cold start labels "Fable 5.1" at once.
+    func loadModelCatalog() -> ClaudeModelCatalog {
+        guard let data = defaults.data(forKey: modelsKey),
+              let catalog = try? JSONDecoder().decode(ClaudeModelCatalog.self, from: data)
+        else { return .empty }
+        return catalog
+    }
+
+    func saveModelCatalog(_ catalog: ClaudeModelCatalog) {
+        guard let data = try? JSONEncoder().encode(catalog) else { return }
+        defaults.set(data, forKey: modelsKey)
+    }
+
     /// Drop what we remember about one provider, so switching it off does not
     /// leave its numbers on screen at the next launch.
     func forget(_ providerID: String) {

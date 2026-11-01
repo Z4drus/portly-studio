@@ -20,6 +20,7 @@ struct MainView: View {
     @ObservedObject private var workspace = StudioWorkspace.shared
     @ObservedObject private var gitCenter = GitCenter.shared
     @ObservedObject private var talvoPresence = TalvoCenter.shared.presence
+    @ObservedObject private var thingsChrome = ThingsCenter.shared.chrome
     @StateObject private var agentSetup = AgentSetup()
     @StateObject private var systemAccess = SystemAccessStatus()
     @AppStorage("agentOnboardingDismissed") private var agentOnboardingDismissed = false
@@ -37,6 +38,13 @@ struct MainView: View {
 
     private static let lastSelectionKey = "lastSelection"
     private static let collapsedProjectsKey = "collapsedProjects"
+    private static let thingsPanelMargin: CGFloat = 10
+
+    /// The env editor and the quick terminal sit left of the Things panel
+    /// when it is open, so it never hides them.
+    private var floatingTrailingInset: CGFloat {
+        thingsChrome.isVisible ? thingsChrome.width + Self.thingsPanelMargin * 2 + 2 : 12
+    }
 
     var body: some View {
         NavigationSplitView {
@@ -76,15 +84,26 @@ struct MainView: View {
                         EnvEditorPanel(project: project)
                             .id(project.id)
                             .padding(.top, 10)
-                            .padding(.trailing, 12)
+                            .padding(.trailing, floatingTrailingInset)
                     } else if workspace.quickTerminalVisible, let project = currentProject {
                         QuickTerminalOverlay(project: project)
                             .padding(.top, 10)
-                            .padding(.trailing, 12)
+                            .padding(.trailing, floatingTrailingInset)
                     }
                 }
                 .animation(Motion.banner, value: workspace.quickTerminalVisible)
                 .animation(Motion.banner, value: workspace.envPanelProjectID)
+                // Things to-dos float over the right of whatever the detail
+                // shows: opening them never resizes a terminal or a page.
+                .overlay(alignment: .trailing) {
+                    if thingsChrome.isVisible {
+                        ThingsPanel()
+                            .padding(Self.thingsPanelMargin)
+                            .transition(.move(edge: .trailing).combined(with: .opacity))
+                    }
+                }
+                .animation(Motion.panel, value: thingsChrome.isVisible)
+                .animation(Motion.panel, value: thingsChrome.width)
         }
         .toolbar {
             // Talvo at the left: the project this one mirrors, when a Talvo
@@ -105,6 +124,9 @@ struct MainView: View {
             }
             ToolbarItem(placement: .primaryAction) {
                 KeepAwakeToolbarButton()
+            }
+            ToolbarItem(placement: .primaryAction) {
+                ThingsToolbarButton()
             }
         }
         .onAppear {

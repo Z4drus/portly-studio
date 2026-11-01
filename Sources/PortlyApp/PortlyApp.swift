@@ -25,6 +25,10 @@ struct PortlyApp: App {
                     .keyboardShortcut("t", modifiers: .command)
             }
             StudioCommands()
+            CommandGroup(after: .sidebar) {
+                Button("Things To-dos") { ThingsCenter.shared.toggleVisible() }
+                    .keyboardShortcut("t", modifiers: [.command, .option])
+            }
         }
 
         MenuBarExtra(isInserted: $showMenuBarItem) {
@@ -106,12 +110,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         UsageCenter.shared.start()
         // Talvo, when a device token was saved on this Mac.
         TalvoCenter.shared.start()
+        // The Things panel: to-dos, and the agents' work hanging under them.
+        ThingsCenter.shared.start()
         // Private fork: no launch telemetry is sent anywhere.
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         // The app is the supervisor: quitting takes every server down with it.
         UsageCenter.shared.stop()
+        ThingsCenter.shared.stop()
         KeepAwake.shared.shutdown()
         StudioWorkspace.shared.terminateEverything()
         TemporaryJobCenter.shared.terminateAll()

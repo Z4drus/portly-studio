@@ -12,11 +12,9 @@ enum GitGraph {
         var lane: Int
         /// Colour index of that lane.
         var color: Int
-        /// Lines from this row down to the next one: where each lane goes.
+        /// Lines from this row down to the next one: where each lane goes,
+        /// lanes that only pass behind the commit included.
         var edges: [Edge]
-        /// Lanes that run straight through this row without touching the
-        /// commit: drawn behind the dot.
-        var passingLanes: [Int]
     }
 
     struct Edge: Hashable {
@@ -122,7 +120,7 @@ enum GitGraph {
             }
 
             widest = max(widest, lane + 1, (edges.map { max($0.fromLane, $0.toLane) + 1 }.max() ?? 0))
-            rows.append(Row(commit: commit, lane: lane, color: color, edges: edges, passingLanes: passing))
+            rows.append(Row(commit: commit, lane: lane, color: color, edges: edges))
         }
 
         return Layout(rows: rows, laneCount: widest)

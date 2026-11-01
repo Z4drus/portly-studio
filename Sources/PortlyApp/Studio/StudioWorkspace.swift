@@ -1056,3 +1056,77 @@ final class StudioWorkspace: ObservableObject {
         revision &+= 1
     }
 }
+
+// MARK: - Terminals, for the Things panel
+
+/// A live Portly terminal: a session pane or a free-terminal tab.
+struct WatchedTerminal: Equatable {
+    let paneID: String
+    let shellPID: Int32
+    /// The folder it works in: the project root, or the tab's current folder.
+    let directory: String
+    let projectID: String?
+}
+
+extension StudioWorkspace {
+    /// Every terminal whose shell runs. Quick terminals are left out: they
+    /// are scratch shells, not where agents are put to work.
+    func watchedTerminals() -> [WatchedTerminal] {
+        let panes = paneRuntimes.values.compactMap { runtime -> WatchedTerminal? in
+            guard let pid = runtime.shellPID else { return nil }
+            return WatchedTerminal(paneID: runtime.id, shellPID: pid, directory: runtime.projectRoot, projectID: runtime.projectID)
+        }
+        let tabs = tabRuntimes.values.compactMap { runtime -> WatchedTerminal? in
+            guard let pid = runtime.shellPID else { return nil }
+            return WatchedTerminal(
+                paneID: runtime.id,
+                shellPID: pid,
+                directory: runtime.currentDirectory ?? runtime.projectRoot,
+                projectID: nil
+            )
+        }
+        return panes + tabs
+    }
+
+    /// "Project · Session 2" for a pane, "Terminal · name" for a tab; nil
+    /// once the terminal was closed.
+    func terminalName(paneID: String) -> String? {
+        if let tab = config.terminalTabs.first(where: { $0.id == paneID }) {
+            let title = tab.name ?? tabRuntimes[paneID]?.title ?? "Tab"
+            return "Terminal · \(title)"
+        }
+        guard let session = config.sessions.first(where: { $0.layout.contains(paneID) }) else { return nil }
+        let project = project(for: session)?.name ?? "Project"
+        return session.panes.count > 1
+            ? "\(project) · \(session.name) · \((session.panes.firstIndex { $0.id == paneID } ?? 0) + 1)"
+            : "\(project) · \(session.name)"
+    }
+
+    /// Shows the terminal and puts the keyboard in it. False when it is gone.
+    @discardableResult
+    func revealTerminal(paneID: String) -> Bool {
+        if config.terminalTabs.contains(where: { $0.id == paneID }) {
+            pendingSelection = .terminal
+            selectTerminalTab(paneID)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                self?.tabRuntimes[paneID]?.focus()
+            }
+            return true
+        }
+        guard let session = config.sessions.first(where: { $0.layout.contains(paneID) }) else { return false }
+        if isArchived(session.projectID) { unarchiveProject(session.projectID) }
+        pendingSelection = .session(session.id)
+        focusPane(sessionID: session.id, paneID: paneID)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            self?.paneRuntimes[paneID]?.focus()
+        }
+        return true
+    }
+
+    /// The terminal you are looking at, to link by hand.
+    func terminalOnScreen() -> String? {
+        if terminalWorkspaceVisible { return config.activeTerminalTabID }
+        guard let sessionID = activeSessionID, let session = session(sessionID) else { return nil }
+        return session.focusedPaneID ?? session.panes.first?.id
+    }
+}

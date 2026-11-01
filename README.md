@@ -163,6 +163,23 @@ the maintainer's Apple ID and team identifier out of every downloaded copy.
   rule limited to those two `pmset` commands.
 - **Activity** — a spinner next to a session while any of its terminals produces output, a dot once
   it went quiet and you have not looked yet. Claude Code's animated title glyph is stripped.
+- **Things to-dos** — a narrow panel floating over the right of the window (⌥⌘T, or the button at
+  the end of the toolbar), so opening it never resizes a terminal; drag its left edge to widen it,
+  double-click that edge for the usual width. It lists the open to-dos of one Things 3 area,
+  *Projets* by default, read-only from the Things database while the panel is open. When you send a
+  prompt to Claude Code in a Portly terminal that is not linked yet, a sorting agent (`claude -p`,
+  Sonnet at medium effort, without tools, MCP servers, hooks or your settings, answering in
+  schema-checked JSON) decides which to-do it moves forward. The prompt shows at the top with a
+  spinner while it is read, then either fades away or travels under its to-do as a branch: a few
+  vague words and the terminal's name. A branch shows a spinner while that Claude Code is `busy`, a
+  pulsing ring while it waits for you, an orange dot once it is done and yours to review; prompting
+  again in that terminal puts it back to work. Clicking a branch opens its terminal, ticking it
+  marks it reviewed (struck through until ×), and to-dos with branches rise to the top. Only Claude
+  Code processes descending from a Portly terminal's shell are followed, and nothing runs on a
+  timer: Portly reacts when Claude Code rewrites its session file. Ticking or adding a to-do goes
+  through Things' URL scheme, so Things records it and syncs it to your phone; that needs *Enable
+  Things URLs* in Things → Settings → General. Branches live in `~/.config/portly/things.json`;
+  finishing a to-do in Things removes its branches.
 - **Drop zone** — drop files anywhere on a project screen to copy them to its root, then
   *Tell the agent* types the file list into the focused terminal.
 - **Plain dev commands** — *Add Server* suggests the project's scripts as everybody types them
@@ -188,8 +205,9 @@ Read directly, the item prompted again every hour however often *Always Allow* w
 
 A black notch on a screen edge shows one ring per assistant and unfolds on hover, with a tooltip
 listing every limit window — Claude's current session, the all-models week, and per-model weekly
-windows such as Fable — and when each resets. Clicking a ring refreshes it. The same readings sit in
-a collapsible section just above *Resources* in the sidebar, and as rows in the menu bar popover.
+windows such as Fable, named after the newest model of that family (*Fable 5.1*) — and when each
+resets. Clicking a ring refreshes it. The same readings sit in a collapsible section just above
+*Resources* in the sidebar, and as rows in the menu bar popover.
 
 Settings → AI Usage chooses which of the three surfaces to use, which window the ring follows
 (current session, or the one closest to its limit), whether per-model weekly windows are listed, and

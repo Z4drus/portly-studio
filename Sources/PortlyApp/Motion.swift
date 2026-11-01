@@ -28,6 +28,9 @@ enum Motion {
     /// already on screen, so it accelerates and brakes like a real object.
     static let reorder = Animation.timingCurve(0.645, 0.045, 0.355, 1, duration: 0.28)
 
+    /// A side panel sliding in or out. No bounce: it is furniture, not a toy.
+    static let panel = Animation.spring(duration: 0.3, bounce: 0)
+
     /// The breathing cadence of a server that is still coming up.
     static let pulse = Animation.easeInOut(duration: 0.85).repeatForever(autoreverses: true)
 }

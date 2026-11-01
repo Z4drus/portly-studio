@@ -14,6 +14,12 @@ actor ClaudeUsageProvider: UsageProvider {
     nonisolated private let keychain: ClaudeKeychain
 
     private let endpoint = URL(string: "https://api.anthropic.com/api/oauth/usage")!
+    private let modelsEndpoint = URL(string: "https://api.anthropic.com/v1/models?limit=100")!
+    /// A new model is a rare event: the list is read twice a day at most.
+    private static let modelsRefreshInterval: TimeInterval = 12 * 60 * 60
+    /// The names that turn "Fable" into "Fable 5.1".
+    private var models: ClaudeModelCatalog
+    private var modelsCheckedAt: Date?
     private let session: URLSession
     /// Held between refreshes so the keychain is read once per token.
     private var credentials: ClaudeCredentials?
@@ -41,6 +47,7 @@ actor ClaudeUsageProvider: UsageProvider {
         self.session = session
         self.archive = archive
         self.retryNoEarlierThan = archive.loadBackoffUntil(providerID: profile.id)
+        self.models = archive.loadModelCatalog()
     }
 
     func fetchSnapshot() async throws -> ProviderSnapshot {
@@ -108,15 +115,39 @@ actor ClaudeUsageProvider: UsageProvider {
         }
 
         let payload = try Self.decoder.decode(ClaudeUsageResponse.self, from: data)
+        await refreshModelsIfStale(token: token)
         return ProviderSnapshot(
             id: id,
             displayName: displayName,
             glyph: glyph,
             fidelity: .official,
             status: .ok,
-            windows: payload.limitWindows(),
+            windows: payload.limitWindows(models: models),
             headlineID: "session"
         )
+    }
+
+    /// Reads Claude's model list with the same token. A failure keeps the
+    /// names already known and tries again a little later; it never costs
+    /// the usage reading.
+    private func refreshModelsIfStale(token: String) async {
+        if let modelsCheckedAt, Date().timeIntervalSince(modelsCheckedAt) < Self.modelsRefreshInterval { return }
+        var request = URLRequest(url: modelsEndpoint)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
+        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        request.timeoutInterval = 10
+        guard let (data, response) = try? await session.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let catalog = ClaudeModelCatalog.decode(data), !catalog.models.isEmpty
+        else {
+            UsageLog.usage.debug("model list unavailable, keeping \(self.models.models.count) known names")
+            modelsCheckedAt = Date().addingTimeInterval(15 * 60 - Self.modelsRefreshInterval)
+            return
+        }
+        modelsCheckedAt = Date()
+        models = catalog
+        archive.saveModelCatalog(catalog)
     }
 
     private func currentToken() throws -> String {
@@ -202,9 +233,19 @@ actor ClaudeUsageProvider: UsageProvider {
 /// The shape of `GET /api/oauth/usage`.
 struct ClaudeUsageResponse: Decodable {
     struct Limit: Decodable {
+        /// Set on a window capped to one model: `weekly_scoped` names it here.
+        struct Scope: Decodable {
+            struct Model: Decodable {
+                let id: String?
+                let displayName: String?
+            }
+            let model: Model?
+        }
+
         let kind: String
         let percent: Double
         let resetsAt: Date?
+        let scope: Scope?
     }
     struct Window: Decodable {
         let utilization: Double
@@ -222,12 +263,16 @@ struct ClaudeUsageResponse: Decodable {
     /// this code knowing about it in advance — so it is preferred, with the
     /// named windows merged in for older responses and for a window that has
     /// just rolled over and dropped out of the array.
-    func limitWindows() -> [LimitWindow] {
+    ///
+    /// A window capped to one model is labelled with that model's current
+    /// version ("Fable 5.1") when `models` knows it.
+    func limitWindows(models: ClaudeModelCatalog = .empty) -> [LimitWindow] {
         var windows = (limits ?? []).compactMap { limit -> LimitWindow? in
             guard let resetsAt = limit.resetsAt else { return nil }
+            let scoped = limit.scope?.model.flatMap { models.name(id: $0.id, family: $0.displayName) }
             return LimitWindow(
                 id: limit.kind,
-                label: ClaudeUsageResponse.label(forKind: limit.kind),
+                label: scoped ?? models.versioned(ClaudeUsageResponse.label(forKind: limit.kind)),
                 usedFraction: limit.percent / 100,
                 resetsAt: resetsAt
             )
@@ -237,7 +282,7 @@ struct ClaudeUsageResponse: Decodable {
             guard let window, let resetsAt = window.resetsAt,
                   !windows.contains(where: { $0.id == id })
             else { return }
-            windows.append(LimitWindow(id: id, label: ClaudeUsageResponse.label(forKind: id),
+            windows.append(LimitWindow(id: id, label: models.versioned(ClaudeUsageResponse.label(forKind: id)),
                                        usedFraction: window.utilization / 100,
                                        resetsAt: resetsAt))
         }
@@ -274,7 +319,7 @@ struct ClaudeUsageResponse: Decodable {
             switch id {
             case "session": return 0
             case "weekly_all": return 1
-            case "weekly_fable", "weekly_mythos": return 2
+            case "weekly_fable", "weekly_mythos", "weekly_scoped": return 2
             case "weekly_opus": return 3
             default: return 4
             }

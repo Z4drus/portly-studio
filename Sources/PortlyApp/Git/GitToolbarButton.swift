@@ -98,7 +98,7 @@ struct GitPopoverView: View {
     @ObservedObject var monitor: GitRepositoryMonitor
     @ObservedObject private var workspace = StudioWorkspace.shared
 
-    private static let width: CGFloat = 420
+    private static let width: CGFloat = 520
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -316,13 +316,7 @@ struct GitPopoverView: View {
 
     private var footer: some View {
         HStack(spacing: 10) {
-            Text(canTellAgent
-                ? "Typed into the focused terminal, you press Return."
-                : "Open a coding session to hand this to an agent.")
-                .font(PortlyTypography.metadata)
-                .foregroundStyle(.tertiary)
-                .lineLimit(2)
-            Spacer(minLength: 8)
+            Spacer(minLength: 0)
             Button {
                 ToolbarPopover.dismiss()
                 workspace.insertIntoFocusedTerminal(GitAgentMessages.commitAndPush)
@@ -332,7 +326,7 @@ struct GitPopoverView: View {
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
             .disabled(!canTellAgent)
-            .help(GitAgentMessages.commitAndPush)
+            .help(canTellAgent ? GitAgentMessages.commitAndPush : "Open a coding session to hand this to an agent.")
         }
     }
 

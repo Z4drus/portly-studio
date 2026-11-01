@@ -89,6 +89,8 @@ final class ClaudeSessionMonitor: ObservableObject {
                 let url = directory.appendingPathComponent(name)
                 guard let data = try? Data(contentsOf: url),
                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      // The Things panel's sorting runs are Portly's own, not yours.
+                      json["cwd"] as? String != ThingsTriage.workingDirectory.path,
                       let record = ClaudeSessionRecord(json: json),
                       ProcessLiveness.isAlive(pid: record.pid, startedAt: record.startedAt)
                 else { return nil }

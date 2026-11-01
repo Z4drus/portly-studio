@@ -85,10 +85,23 @@ final class GitOutputParserTests: XCTestCase {
         XCTAssertEqual(commits[0].parents, ["bbbb", "cccc"])
         XCTAssertEqual(commits[0].subject, "feat: merge things")
         XCTAssertTrue(commits[0].isHead)
-        XCTAssertEqual(commits[0].branchNames, ["main", "origin/main", "v1.0"])
+        // origin/main sits with main: one badge says it.
+        XCTAssertEqual(commits[0].refBadges, [GitRef(name: "main", kind: .branch), GitRef(name: "v1.0", kind: .tag)])
         XCTAssertEqual(commits[0].date, Date(timeIntervalSince1970: 1_700_000_000))
         XCTAssertEqual(commits[1].parents, [])
         XCTAssertFalse(commits[1].isHead)
+    }
+
+    func testRefBadgesKeepARemoteThatIsElsewhere() {
+        let ahead = GitCommit(hash: "a", parents: [], subject: "s", author: "a", date: Date(),
+                              refs: ["HEAD -> main", "tag: v2", "origin/feature", "origin/HEAD"])
+        XCTAssertEqual(ahead.refBadges, [
+            GitRef(name: "main", kind: .branch),
+            GitRef(name: "origin/feature", kind: .remote),
+            GitRef(name: "v2", kind: .tag),
+        ])
+        let detached = GitCommit(hash: "b", parents: [], subject: "s", author: "a", date: Date(), refs: ["HEAD"])
+        XCTAssertTrue(detached.refBadges.isEmpty)
     }
 
     func testRemoteURLsBecomeBrowsablePages() {
@@ -175,7 +188,7 @@ final class GitGraphTests: XCTestCase {
         XCTAssertTrue(layout.rows[0].edges.contains { $0.fromLane == 0 && $0.toLane == 1 })
         XCTAssertTrue(layout.rows[0].edges.contains { $0.fromLane == 0 && $0.toLane == 0 })
         // While f is drawn, lane 0 passes behind it on its way to b.
-        XCTAssertEqual(layout.rows[1].passingLanes, [0])
+        XCTAssertTrue(layout.rows[1].edges.contains { $0.fromLane == 0 && $0.toLane == 0 })
         // Both lanes converge on a: the edge leaving f's lane bends to lane 0
         // only when the next row is a, which is b here, so it runs straight.
         XCTAssertTrue(layout.rows[1].edges.contains { $0.fromLane == 1 && $0.toLane == 1 })
