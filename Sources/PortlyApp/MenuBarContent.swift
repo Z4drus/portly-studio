@@ -209,6 +209,8 @@ private struct MenuBarServerRow: View {
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .onTapGesture {
+            // A project in its own window is shown there, not in the main one.
+            if ProjectWindowCenter.shared.route(.server(runtime.id)) { return }
             AppSelection.shared.pending = .server(runtime.id)
             WindowOpener.openMainWindow()
         }

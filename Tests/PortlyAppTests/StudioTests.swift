@@ -19,6 +19,15 @@ final class PaneLayoutTests: XCTestCase {
         XCTAssertEqual(ratio, 0.5)
     }
 
+    func testSplittingBeforePutsTheNewTerminalOnTheLeft() {
+        let layout = PaneLayout.leaf(pane("a"))
+            .splitting("a", axis: .horizontal, adding: pane("b"), before: true)
+        XCTAssertEqual(layout.paneIDs, ["b", "a"])
+
+        let nested = layout.splitting("a", axis: .horizontal, adding: pane("c"), before: true)
+        XCTAssertEqual(nested.paneIDs, ["b", "c", "a"], "the new pane lands right before its target")
+    }
+
     func testRemovingCollapsesASingleChildSplit() {
         let layout = PaneLayout.leaf(pane("a"))
             .splitting("a", axis: .horizontal, adding: pane("b"))
@@ -445,5 +454,27 @@ final class ResumeNotesTests: XCTestCase {
     func testNotesAreBoundedAndQuotedForTheShell() {
         XCTAssertEqual(ResumeNotes.sanitized(String(repeating: "a", count: 5000)).count, ResumeNotes.maximumLength)
         XCTAssertEqual(ResumeNotes.shellQuoted("$(rm -rf ~) `x` 'y'"), "'$(rm -rf ~) `x` '\\''y'\\'''")
+    }
+}
+
+
+final class SessionOrderTests: XCTestCase {
+    private func session(_ id: String, project: String = "prj") -> TerminalSession {
+        TerminalSession(id: id, projectID: project, name: id, layout: .leaf(TerminalPaneConfig(id: "p_" + id, kind: .shell)))
+    }
+
+    func testDraggingTakesThePlaceOfTheTabPassedOverAndLeavesOtherProjectsAlone() {
+        let sessions = [session("a"), session("x", project: "other"), session("b"), session("c")]
+        let moved = SessionOrder.moving("c", onto: "a", in: sessions)
+        XCTAssertEqual(moved.map(\.id), ["c", "a", "x", "b"])
+        XCTAssertEqual(moved.filter { $0.projectID == "prj" }.map(\.id), ["c", "a", "b"])
+        XCTAssertEqual(SessionOrder.moving("a", onto: "a", in: sessions), sessions)
+    }
+
+    func testClosingATabShowsTheOneThatSlidesIntoItsPlace() {
+        let sessions = [session("a"), session("b"), session("c")]
+        XCTAssertEqual(SessionOrder.successor(afterRemoving: "b", from: sessions), "c")
+        XCTAssertEqual(SessionOrder.successor(afterRemoving: "c", from: sessions), "b", "the last tab falls back to its left neighbour")
+        XCTAssertNil(SessionOrder.successor(afterRemoving: "a", from: [session("a")]))
     }
 }

@@ -69,7 +69,9 @@ final class DeferredResizeHost: NSView {
 
     override func layout() {
         super.layout()
-        guard let content, content.frame.size != bounds.size else { return }
+        // A terminal moved to another window has another host now: this one
+        // must not resize it from where it was.
+        guard let content, content.superview === self, content.frame.size != bounds.size else { return }
         // A view that has no size yet is not mid-animation: give it one now.
         if content.frame.size == .zero {
             settle()
@@ -89,7 +91,7 @@ final class DeferredResizeHost: NSView {
     private func settle() {
         pending?.cancel()
         pending = nil
-        guard let content else { return }
+        guard let content, content.superview === self else { return }
         let target = CGRect(origin: .zero, size: bounds.size)
         guard content.frame != target else { return }
         content.frame = target

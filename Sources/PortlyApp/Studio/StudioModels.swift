@@ -70,19 +70,26 @@ indirect enum PaneLayout: Codable, Hashable {
         paneIDs.contains(id)
     }
 
-    /// Replace the leaf `paneID` with a split holding it and `newPane`.
-    func splitting(_ paneID: String, axis: SplitAxis, adding newPane: TerminalPaneConfig) -> PaneLayout {
+    /// Replace the leaf `paneID` with a split holding it and `newPane`:
+    /// after it (right or below), or before it (left) when `before` is set.
+    func splitting(_ paneID: String, axis: SplitAxis, adding newPane: TerminalPaneConfig, before: Bool = false) -> PaneLayout {
         switch self {
         case .leaf(let pane):
             guard pane.id == paneID else { return self }
-            return .split(id: PaneLayout.newSplitID(), axis: axis, ratio: 0.5, first: .leaf(pane), second: .leaf(newPane))
+            return .split(
+                id: PaneLayout.newSplitID(),
+                axis: axis,
+                ratio: 0.5,
+                first: .leaf(before ? newPane : pane),
+                second: .leaf(before ? pane : newPane)
+            )
         case .split(let id, let splitAxis, let ratio, let first, let second):
             return .split(
                 id: id,
                 axis: splitAxis,
                 ratio: ratio,
-                first: first.splitting(paneID, axis: axis, adding: newPane),
-                second: second.splitting(paneID, axis: axis, adding: newPane)
+                first: first.splitting(paneID, axis: axis, adding: newPane, before: before),
+                second: second.splitting(paneID, axis: axis, adding: newPane, before: before)
             )
         }
     }
@@ -173,6 +180,33 @@ struct TerminalSession: Codable, Identifiable, Hashable {
     static func newID() -> String { "ses_" + String(UUID().uuidString.prefix(8)).lowercased() }
 
     var panes: [TerminalPaneConfig] { layout.panes }
+}
+
+/// The order of a project's sessions, as its window's tab strip shows them.
+enum SessionOrder {
+    /// `sessions` with `id` moved to where `targetID` is, the way a dragged
+    /// tab takes the place of the one it passes over. Sessions of other
+    /// projects keep their places in the shared list.
+    static func moving(_ id: String, onto targetID: String, in sessions: [TerminalSession]) -> [TerminalSession] {
+        guard id != targetID,
+              let from = sessions.firstIndex(where: { $0.id == id }),
+              let to = sessions.firstIndex(where: { $0.id == targetID }) else { return sessions }
+        var next = sessions
+        let moved = next.remove(at: from)
+        next.insert(moved, at: to)
+        return next
+    }
+
+    /// The session to show once `removedID` is gone: the one that slides
+    /// into its place, else the new last one, as a browser picks a tab.
+    static func successor(afterRemoving removedID: String, from projectSessions: [TerminalSession]) -> String? {
+        guard let index = projectSessions.firstIndex(where: { $0.id == removedID }) else {
+            return projectSessions.first?.id
+        }
+        let remaining = projectSessions.filter { $0.id != removedID }
+        guard !remaining.isEmpty else { return nil }
+        return remaining[min(index, remaining.count - 1)].id
+    }
 }
 
 // MARK: - Free terminal tabs

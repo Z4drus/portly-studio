@@ -70,6 +70,7 @@ struct MainView: View {
                 .overlay {
                     if talvoPresence.isConfigured,
                        let projectID = workspace.talvoPanelProjectID,
+                       !workspace.isDetached(projectID),
                        let project = storedProject(projectID),
                        let talvoID = workspace.talvoProjectID(for: projectID) {
                         TalvoPanel(project: project, talvoProjectID: talvoID)
@@ -80,18 +81,21 @@ struct MainView: View {
                 }
                 .animation(Motion.banner, value: workspace.talvoPanelProjectID)
                 .overlay(alignment: .topTrailing) {
-                    if let projectID = workspace.envPanelProjectID, let project = storedProject(projectID) {
+                    // A project in its own window keeps its panels there.
+                    if let projectID = workspace.envPanelProjectID,
+                       !workspace.isDetached(projectID),
+                       let project = storedProject(projectID) {
                         EnvEditorPanel(project: project)
                             .id(project.id)
                             .padding(.top, 10)
                             .padding(.trailing, floatingTrailingInset)
-                    } else if workspace.quickTerminalVisible, let project = currentProject {
+                    } else if let project = currentProject, workspace.quickTerminalProjectID == project.id {
                         QuickTerminalOverlay(project: project)
                             .padding(.top, 10)
                             .padding(.trailing, floatingTrailingInset)
                     }
                 }
-                .animation(Motion.banner, value: workspace.quickTerminalVisible)
+                .animation(Motion.banner, value: workspace.quickTerminalProjectID)
                 .animation(Motion.banner, value: workspace.envPanelProjectID)
                 // Things to-dos float over the right of whatever the detail
                 // shows: opening them never resizes a terminal or a page.
@@ -150,6 +154,13 @@ struct MainView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             systemAccess.refresh()
         }
+        // Back to the main window from a project window: the keyboard
+        // commands follow it.
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { note in
+            guard let window = note.object as? NSWindow,
+                  window.identifier?.rawValue.contains(WindowOpener.mainWindowID) == true else { return }
+            syncWorkspaceContext()
+        }
         .onChange(of: appSelection.pending) { applyPendingSelection() }
         .onChange(of: selection) {
             // Reaching an archived project from elsewhere (the menu bar lists
@@ -159,16 +170,24 @@ struct MainView: View {
                 workspace.unarchiveProject(project.id)
             }
             // The Talvo panel belongs to one project: leaving it closes it.
-            if let open = workspace.talvoPanelProjectID, open != currentProject?.id {
+            // A project window's panel is that window's business.
+            if let open = workspace.talvoPanelProjectID, !workspace.isDetached(open), open != currentProject?.id {
                 workspace.talvoPanelProjectID = nil
+            }
+            // The main window's quick terminal follows you from project to
+            // project, as it always has.
+            if let open = workspace.quickTerminalProjectID, !workspace.isDetached(open),
+               let project = currentProject, project.id != open {
+                workspace.quickTerminalProjectID = project.id
             }
             syncWorkspaceContext()
             rememberSelection()
         }
         .onChange(of: workspace.pendingSelection) {
             guard let pending = workspace.pendingSelection else { return }
-            selection = pending
             workspace.pendingSelection = nil
+            if ProjectWindowCenter.shared.route(pending) { return }
+            selection = pending
         }
         .sheet(isPresented: $addingProject) {
             ProjectForm(
@@ -232,6 +251,11 @@ struct MainView: View {
             ForEach(Array(searchResults.archived.enumerated()), id: \.element.id) { index, project in
                 projectSection(project, isArchived: true, leadsArchive: index == 0)
             }
+            // Projects open in their own window are out of the sidebar; a
+            // search still finds them, to say where they are.
+            ForEach(Array(searchResults.detached.enumerated()), id: \.element.id) { index, project in
+                detachedSection(project, leads: index == 0)
+            }
         }
         .listStyle(.sidebar)
         .animation(Motion.state, value: collapsedProjects)
@@ -241,12 +265,15 @@ struct MainView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(.background)
             } else if showAllPutAway {
+                let inWindows = !workspace.detachedProjects.isEmpty
                 VStack(spacing: 6) {
-                    NucleoIconView(.archive, size: 22)
+                    NucleoIconView(inWindows ? .windowLayout : .archive, size: 22)
                         .foregroundStyle(.tertiary)
-                    Text("Every project is archived")
+                    Text(inWindows ? "Every project is elsewhere" : "Every project is archived")
                         .font(PortlyTypography.bodyMedium)
-                    Text("Bring one back from the archive button next to the search field.")
+                    Text(inWindows
+                        ? "Close a project's own window to bring it back here, or restore one from the archive button."
+                        : "Bring one back from the archive button next to the search field.")
                         .font(PortlyTypography.metadata)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -259,6 +286,7 @@ struct MainView: View {
         // on their own. Letting them travel keeps the list readable.
         .animation(Motion.reorder, value: workspace.config.projectOrder)
         .animation(Motion.reorder, value: workspace.config.archivedProjects)
+        .animation(Motion.reorder, value: workspace.detachedProjects)
         .safeAreaInset(edge: .top, spacing: 0) { sidebarSearch }
         .safeAreaInset(edge: .bottom) { sidebarActions }
         .onExitCommand {
@@ -284,6 +312,8 @@ struct MainView: View {
                 toggleCollapsed(project.id)
             } onNewSession: {
                 if let project = storedProject(project.id) { startSession(in: project) }
+            } onOpenWindow: {
+                if let project = storedProject(project.id) { openInWindow(project) }
             }
             .tag(Selection.project(project.id))
             .onDrag {
@@ -340,6 +370,28 @@ struct MainView: View {
         }
     }
 
+    /// A project open in its own window, found by a search: one row that
+    /// says so, and leads to the window.
+    private func detachedSection(_ project: Project, leads: Bool) -> some View {
+        Section {
+            DetachedProjectRow(project: project)
+                .tag(Selection.project(project.id))
+                .contextMenu {
+                    Button("Show Its Window") { ProjectWindowCenter.shared.bringToFront(projectID: project.id) }
+                    Button("Close Its Window") { ProjectWindowCenter.shared.close(projectID: project.id) }
+                }
+        } header: {
+            if leads {
+                Text("In Their Own Window")
+                    .font(PortlyTypography.label)
+                    .foregroundStyle(.tertiary)
+                    .kerning(0.4)
+                    .textCase(.uppercase)
+                    .padding(.top, 6)
+            }
+        }
+    }
+
     /// The projects the sidebar lists, in the order you gave them. A server
     /// starting moves its project to the top; stopping leaves it there.
     private var listedProjects: [Project] {
@@ -351,9 +403,24 @@ struct MainView: View {
     }
 
     /// What the list shows: everything listed when there is no search, the
-    /// listed and archived matches when there is.
+    /// listed, archived and windowed matches when there is.
     private var searchResults: SidebarSearchResults {
-        SidebarSearch.results(listed: listedProjects, archived: archivedProjects, query: search)
+        SidebarSearch.results(
+            listed: listedProjects,
+            archived: archivedProjects,
+            detached: workspace.detachedProjects(supervisor.projects),
+            query: search
+        )
+    }
+
+    /// Give a project a window of its own. It leaves the sidebar; the
+    /// window opens on the session or server the main window was showing
+    /// of it, if any.
+    private func openInWindow(_ project: Project) {
+        let showing = selection.flatMap { workspace.projectID(of: $0) == project.id ? $0 : nil }
+        // Let go of its terminals first: a terminal lives in one window.
+        if showing != nil { selection = nil }
+        ProjectWindowCenter.shared.open(projectID: project.id, showing: showing)
     }
 
     private var showEmptySearch: Bool {
@@ -524,6 +591,8 @@ struct MainView: View {
 
     @ViewBuilder
     private func projectMenu(_ project: Project) -> some View {
+        Button("Open in Separate Window") { openInWindow(project) }
+        Divider()
         Button("New Coding Session") { startSession(in: project) }
         Button("Environment Files…") {
             selection = .project(project.id)
@@ -531,8 +600,10 @@ struct MainView: View {
         }
         Button("Quick Terminal") {
             selection = .project(project.id)
-            workspace.envPanelProjectID = nil
-            workspace.quickTerminalVisible = true
+            if let env = workspace.envPanelProjectID, !workspace.isDetached(env) {
+                workspace.envPanelProjectID = nil
+            }
+            workspace.quickTerminalProjectID = project.id
         }
         Divider()
         Button("Start All") { supervisor.startProject(project.id) }
@@ -571,14 +642,22 @@ struct MainView: View {
         selection = .session(session.id)
     }
 
-    /// The project the detail area is about, for the quick terminal, drops and ⌘N.
-    private var currentProject: Project? {
+    /// The project the selection points at, wherever it is shown.
+    private var selectedProject: Project? {
         switch selection {
         case .project(let id): return storedProject(id)
         case .session(let id): return workspace.session(id).flatMap { storedProject($0.projectID) }
         case .server(let id): return supervisor.project(containing: id)
         case .resources, .ports, .terminal, nil: return nil
         }
+    }
+
+    /// The project the detail area is about, for the quick terminal, drops
+    /// and ⌘N. None while that project is open in its own window: the main
+    /// window only says where it went.
+    private var currentProject: Project? {
+        guard let project = selectedProject, !workspace.isDetached(project.id) else { return nil }
+        return project
     }
 
     // MARK: - Collapsed projects
@@ -678,13 +757,16 @@ struct MainView: View {
         }
     }
 
+    /// The main window's project and session become the targets of the
+    /// keyboard commands, unless a project window has the keyboard.
     private func syncWorkspaceContext() {
+        var shownSession: String?
+        if case .session(let id) = selection, currentProject != nil { shownSession = id }
+        // On screen, so its panes count as seen, whichever window is key.
+        workspace.setWindowSession(shownSession, forProject: WindowOpener.mainWindowID)
+        guard !ProjectWindowCenter.shared.isKeyWindowProjectWindow else { return }
         workspace.activeProjectID = currentProject?.id
-        if case .session(let id) = selection {
-            workspace.activeSessionID = id
-        } else {
-            workspace.activeSessionID = nil
-        }
+        workspace.activeSessionID = shownSession
     }
 
     @ViewBuilder
@@ -712,6 +794,15 @@ struct MainView: View {
 
     @ViewBuilder
     private var detail: some View {
+        if let project = selectedProject, workspace.isDetached(project.id) {
+            DetachedProjectNotice(project: project)
+        } else {
+            selectionDetail
+        }
+    }
+
+    @ViewBuilder
+    private var selectionDetail: some View {
         switch selection {
         case .resources:
             ResourceDashboard()
@@ -771,8 +862,9 @@ struct MainView: View {
 
     private func applyPendingSelection() {
         guard let pending = appSelection.pending else { return }
-        selection = pending
         appSelection.pending = nil
+        if ProjectWindowCenter.shared.route(pending) { return }
+        selection = pending
     }
 
     struct EditingServer: Identifiable {
@@ -796,9 +888,11 @@ private struct ProjectHeader: View {
     let agentName: String
     let onToggle: () -> Void
     let onNewSession: () -> Void
+    let onOpenWindow: () -> Void
 
     @State private var hoveringToggle = false
     @State private var hoveringNewSession = false
+    @State private var hoveringOpenWindow = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -828,6 +922,20 @@ private struct ProjectHeader: View {
                         .padding(.trailing, 2)
                         .transition(.opacity)
                 }
+                Button(action: onOpenWindow) {
+                    NucleoIconView(.arrowUpRight, size: 9)
+                        .foregroundStyle(hoveringOpenWindow ? Color.primary : Color.secondary)
+                        .frame(width: 20, height: 20)
+                        .background {
+                            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                .fill(Color.primary.opacity(hoveringOpenWindow ? 0.08 : 0))
+                        }
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Open in a separate window")
+                .accessibilityLabel("Open \(project.name) in a separate window")
+                .onHover { hoveringOpenWindow = $0 }
                 Button(action: onNewSession) {
                     NucleoIconView(.plus, size: 9)
                         .foregroundStyle(hoveringNewSession ? Color.primary : Color.secondary)
@@ -865,6 +973,81 @@ private struct ProjectHeader: View {
         .animation(Motion.state, value: isCollapsed)
         .animation(Motion.hover, value: hoveringNewSession)
         .animation(Motion.hover, value: hoveringToggle)
+        .animation(Motion.hover, value: hoveringOpenWindow)
+    }
+}
+
+/// A search result for a project open in its own window.
+private struct DetachedProjectRow: View {
+    let project: Project
+
+    var body: some View {
+        HStack(spacing: 8) {
+            NucleoIconView(LegacyProjectIcons.resolve(project.icon), size: 12)
+                .foregroundStyle(Color(hex: project.color))
+                .frame(width: 20, height: 20)
+                .background {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color(hex: project.color).opacity(0.12))
+                }
+            Text(project.name)
+                .font(PortlyTypography.project)
+                .lineLimit(1)
+            Spacer()
+            NucleoIconView(.windowLayout, size: 10)
+                .foregroundStyle(.tertiary)
+                .accessibilityHidden(true)
+        }
+        .padding(.vertical, 2)
+        .help("Open in its own window")
+        .accessibilityLabel("\(project.name), open in its own window")
+    }
+}
+
+/// What the main window shows for a project that is open in a window of its
+/// own: where it is, and the two ways to deal with that. One place per
+/// project keeps a terminal from being wanted by two windows at once.
+private struct DetachedProjectNotice: View {
+    let project: Project
+
+    var body: some View {
+        VStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color(hex: project.color).opacity(0.14))
+                NucleoIconView(LegacyProjectIcons.resolve(project.icon), size: 22)
+                    .foregroundStyle(Color(hex: project.color))
+            }
+            .frame(width: 46, height: 46)
+            VStack(spacing: 4) {
+                Text("\(project.name) is open in its own window")
+                    .font(PortlyTypography.title)
+                    .multilineTextAlignment(.center)
+                Text("Close that window to bring the project back to the sidebar.")
+                    .font(PortlyTypography.body)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            HStack(spacing: 8) {
+                Button {
+                    ProjectWindowCenter.shared.close(projectID: project.id)
+                } label: {
+                    NucleoLabel("Close Its Window", icon: .arrowDownLeft, size: 11)
+                }
+                .controlSize(.large)
+                Button {
+                    ProjectWindowCenter.shared.bringToFront(projectID: project.id)
+                } label: {
+                    NucleoLabel("Show Window", icon: .arrowUpRight, size: 11)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+            }
+            .padding(.top, 4)
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .navigationTitle(project.name)
     }
 }
 
@@ -1060,6 +1243,7 @@ private struct SessionRow: View {
         .contextMenu {
             Button("Rename…", action: beginRename)
             Divider()
+            Button("Split Left") { workspace.split(sessionID: session.id, axis: .horizontal, before: true) }
             Button("Split Right") { workspace.split(sessionID: session.id, axis: .horizontal) }
             Button("Split Down") { workspace.split(sessionID: session.id, axis: .vertical) }
             Divider()

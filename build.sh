@@ -176,6 +176,26 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 				<string>public.data</string>
 			</array>
 		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>dev.portly.terminal-tab</string>
+			<key>UTTypeDescription</key>
+			<string>Portly terminal tab</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>dev.portly.session-tab</string>
+			<key>UTTypeDescription</key>
+			<string>Portly coding session</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+		</dict>
 	</array>
 </dict>
 </plist>

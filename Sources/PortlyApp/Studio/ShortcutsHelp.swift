@@ -17,6 +17,7 @@ struct ShortcutsHelpPopover: View {
         Group(title: "Terminals", rows: [
             Row(title: "New coding session", keys: ["⌘", "N"]),
             Row(title: "Split right", keys: ["⌘", "D"]),
+            Row(title: "Split left", keys: ["⌥", "⌘", "D"]),
             Row(title: "Split down", keys: ["⇧", "⌘", "D"]),
             Row(title: "New shell terminal", keys: ["⌘", "T"]),
             Row(title: "New agent terminal", keys: ["⇧", "⌘", "T"]),
@@ -38,6 +39,10 @@ struct ShortcutsHelpPopover: View {
             Row(title: "Close tab", keys: ["⌘", "W"]),
             Row(title: "Next / previous tab", keys: ["⌘", "]", "·", "⌘", "["]),
             Row(title: "Jump to a tab", keys: ["⌘", "1", "…", "⌘", "9"]),
+        ]),
+        Group(title: "Project window", rows: [
+            Row(title: "New session tab", keys: ["⌘", "N"]),
+            Row(title: "Jump to a session", keys: ["⌘", "1", "…", "⌘", "9"]),
         ]),
     ]
 

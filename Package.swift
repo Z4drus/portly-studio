@@ -10,7 +10,8 @@ let package = Package(
         .library(name: "PortlyCore", targets: ["PortlyCore"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/migueldeicaza/SwiftTerm", from: "1.2.0"),
+        // 1.99.x is the 2.0 preview, which changes the terminal API: stay on 1.x until it ships.
+        .package(url: "https://github.com/migueldeicaza/SwiftTerm", "1.20.0"..<"1.99.0"),
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.3.0"),
     ],
     targets: [

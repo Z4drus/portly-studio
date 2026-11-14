@@ -56,7 +56,7 @@ struct QuickTerminalOverlay: View {
                 headerButton(.restart, help: "New shell") { runtime.restart() }
             }
             headerButton(.xmark, help: "Hide (⌘J)") {
-                workspace.quickTerminalVisible = false
+                workspace.quickTerminalProjectID = nil
             }
         }
         .padding(.leading, 12)

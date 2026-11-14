@@ -6,6 +6,8 @@ struct StudioCommands: Commands {
         CommandMenu("Terminal") {
             Button("Split Right") { StudioWorkspace.shared.perform(.splitRight) }
                 .keyboardShortcut("d", modifiers: .command)
+            Button("Split Left") { StudioWorkspace.shared.perform(.splitLeft) }
+                .keyboardShortcut("d", modifiers: [.command, .option])
             Button("Split Down") { StudioWorkspace.shared.perform(.splitDown) }
                 .keyboardShortcut("d", modifiers: [.command, .shift])
             Button("New Agent Terminal") { StudioWorkspace.shared.perform(.newPane(.agent)) }

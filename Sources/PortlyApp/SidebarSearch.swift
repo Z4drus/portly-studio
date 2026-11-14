@@ -40,13 +40,20 @@ enum SidebarSearch {
 
     /// What the sidebar shows for a query: the listed projects that match,
     /// then the archived ones that match, so a search finds a project put
-    /// away without a trip through the archive button. With no query the
-    /// archive stays hidden, as it should.
-    static func results(listed: [Project], archived: [Project], query: String) -> SidebarSearchResults {
+    /// away without a trip through the archive button, then the ones open in
+    /// a window of their own, to say where they went. With no query the
+    /// archive and the windowed projects stay out of the list, as they should.
+    static func results(
+        listed: [Project],
+        archived: [Project],
+        detached: [Project] = [],
+        query: String
+    ) -> SidebarSearchResults {
         guard isActive(query) else { return SidebarSearchResults(listed: listed, archived: []) }
         return SidebarSearchResults(
             listed: filterProjects(listed, query: query),
-            archived: filterProjects(archived, query: query)
+            archived: filterProjects(archived, query: query),
+            detached: filterProjects(detached, query: query)
         )
     }
 }
@@ -54,8 +61,10 @@ enum SidebarSearch {
 struct SidebarSearchResults: Equatable {
     var listed: [Project]
     var archived: [Project]
+    /// Matches open in their own window: shown, never picked by Return.
+    var detached: [Project] = []
 
-    var isEmpty: Bool { listed.isEmpty && archived.isEmpty }
+    var isEmpty: Bool { listed.isEmpty && archived.isEmpty && detached.isEmpty }
 
     /// Return picks the first listed match, and only then an archived one.
     var first: SidebarSearchMatch? {

@@ -372,6 +372,8 @@ struct ServerDetail: View {
 
                     Button {
                         AppSelection.shared.pending = .resources
+                        // From a project window, the dashboard is in the main one.
+                        WindowOpener.openMainWindow()
                     } label: {
                         NucleoLabel("Details", icon: .arrowUpRight)
                     }

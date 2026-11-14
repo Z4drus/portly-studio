@@ -269,6 +269,7 @@ enum AppIcon: String, CaseIterable {
     case browser = "arrows/open-in-browser"
     case externalLink = "arrows/external-link"
     case arrowUpRight = "arrows/arrow-up-right"
+    case arrowDownLeft = "arrows/arrow-down-left"
     case eraser = "editing/eraser"
     case broom = "editing/broom"
     case wrench = "ui-layout/wrench-screwdriver"

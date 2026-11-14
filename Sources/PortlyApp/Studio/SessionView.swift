@@ -12,15 +12,19 @@ import SwiftUI
 /// need themselves, so only an item whose own state moved is redrawn.
 struct SessionView: View {
     let sessionID: String
+    /// In a project window the tab strip names the session, so the bar
+    /// under the toolbar goes and the terminals sit straight on black.
+    var showsSessionBar = true
 
     var body: some View {
-        SessionContentView(sessionID: sessionID)
+        SessionContentView(sessionID: sessionID, showsSessionBar: showsSessionBar)
             .toolbar { SessionToolbar(sessionID: sessionID) }
     }
 }
 
 private struct SessionContentView: View {
     let sessionID: String
+    let showsSessionBar: Bool
 
     @ObservedObject private var workspace = StudioWorkspace.shared
     @State private var renaming = false
@@ -46,8 +50,10 @@ private struct SessionContentView: View {
     private func content(_ session: TerminalSession) -> some View {
         let project = workspace.project(for: session)
         return VStack(spacing: 0) {
-            sessionBar(session, project: project)
-            Divider()
+            if showsSessionBar {
+                sessionBar(session, project: project)
+                Divider()
+            }
             SplitLayoutView(
                 layout: session.layout,
                 zoomedPaneID: session.zoomedPaneID,
@@ -67,10 +73,11 @@ private struct SessionContentView: View {
                     )
                 }
             )
-            .padding(8)
+            .padding(showsSessionBar ? 8 : 6)
             .animation(Motion.paneSwap, value: session.layout.paneIDs)
             .animation(Motion.paneSwap, value: session.zoomedPaneID)
         }
+        .background(showsSessionBar ? Color.clear : Color(nsColor: TerminalTheme.background))
         .navigationTitle(session.name)
         .navigationSubtitle(project?.name ?? "")
         .onChange(of: workspace.sessionBarRenameRequest) {
@@ -79,8 +86,12 @@ private struct SessionContentView: View {
             beginRename(session)
         }
         .onAppear {
-            workspace.activeSessionID = session.id
-            workspace.activeProjectID = session.projectID
+            // The keyboard commands follow the key window: a session coming
+            // up in a window you are not typing in does not take them.
+            if ProjectWindowCenter.shared.keyWindowShows(projectID: session.projectID) {
+                workspace.activeSessionID = session.id
+                workspace.activeProjectID = session.projectID
+            }
             workspace.touchProject(session.projectID)
             focusCurrentPane(session)
         }
@@ -266,15 +277,24 @@ private struct SessionMoreMenu: View {
             Button("New Shell Terminal") {
                 StudioWorkspace.shared.split(sessionID: sessionID, axis: .horizontal, kind: .shell)
             }
+            Button("New Terminal on the Left") {
+                StudioWorkspace.shared.split(sessionID: sessionID, axis: .horizontal, before: true)
+            }
             Divider()
             Button("Rename Session…") {
-                StudioWorkspace.shared.sessionBarRenameRequest = sessionID
+                let workspace = StudioWorkspace.shared
+                // In a project window the tab carries the name.
+                if let projectID = workspace.session(sessionID)?.projectID, workspace.isDetached(projectID) {
+                    workspace.renameRequest = sessionID
+                } else {
+                    workspace.sessionBarRenameRequest = sessionID
+                }
             }
             Button("Close Session", role: .destructive) {
                 let workspace = StudioWorkspace.shared
                 guard let projectID = workspace.session(sessionID)?.projectID else { return }
                 workspace.removeSession(sessionID)
-                workspace.pendingSelection = .project(projectID)
+                workspace.navigate(to: .project(projectID))
             }
         } label: {
             NucleoLabel("More", icon: .dots)
@@ -419,6 +439,10 @@ private struct PaneView: View {
             }
 
             HStack(spacing: 2) {
+                headerButton(.splitRight, mirrored: true, help: "Split left") {
+                    workspace.split(sessionID: session.id, paneID: pane.id, axis: .horizontal, before: true)
+                }
+                .disabled(!canSplit)
                 headerButton(.splitRight, help: "Split right") {
                     workspace.split(sessionID: session.id, paneID: pane.id, axis: .horizontal)
                 }
@@ -456,9 +480,17 @@ private struct PaneView: View {
         return AppIcon.terminal.rawValue
     }
 
-    private func headerButton(_ icon: AppIcon, help: String, action: @escaping () -> Void) -> some View {
+    /// `mirrored` flips the glyph: the split-right icon read backwards is
+    /// the split to the left.
+    private func headerButton(
+        _ icon: AppIcon,
+        mirrored: Bool = false,
+        help: String,
+        action: @escaping () -> Void
+    ) -> some View {
         Button(action: action) {
             NucleoIconView(icon, size: 11)
+                .scaleEffect(x: mirrored ? -1 : 1, y: 1)
                 .foregroundStyle(Color(nsColor: TerminalTheme.foreground).opacity(0.7))
                 .frame(width: 22, height: 22)
                 .contentShape(Rectangle())
@@ -495,6 +527,8 @@ private struct PaneView: View {
 
     @ViewBuilder
     private var paneMenu: some View {
+        Button("Split Left") { workspace.split(sessionID: session.id, paneID: pane.id, axis: .horizontal, before: true) }
+            .disabled(!canSplit)
         Button("Split Right") { workspace.split(sessionID: session.id, paneID: pane.id, axis: .horizontal) }
             .disabled(!canSplit)
         Button("Split Down") { workspace.split(sessionID: session.id, paneID: pane.id, axis: .vertical) }

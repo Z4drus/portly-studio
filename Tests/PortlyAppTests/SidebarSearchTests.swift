@@ -102,6 +102,23 @@ final class SidebarSearchTests: XCTestCase {
         XCTAssertTrue(SidebarSearch.results(listed: catalog, archived: [archived], query: "zzz").isEmpty)
     }
 
+    func testAProjectInItsOwnWindowIsFoundButNeverPickedByReturn() {
+        let windowed = Project(
+            id: "prj_win",
+            name: "Studio",
+            root: "/Users/me/Developer/studio",
+            servers: [ServerConfig(id: "srv_win", name: "web", command: "pnpm dev", port: 5000)]
+        )
+
+        let idle = SidebarSearch.results(listed: catalog, archived: [], detached: [windowed], query: "")
+        XCTAssertTrue(idle.detached.isEmpty, "a windowed project stays out of the list without a query")
+
+        let byName = SidebarSearch.results(listed: catalog, archived: [], detached: [windowed], query: "studio")
+        XCTAssertEqual(byName.detached.map(\.id), ["prj_win"])
+        XCTAssertFalse(byName.isEmpty, "the search says where the project went")
+        XCTAssertNil(byName.first, "Return does not lead into a project that lives in another window")
+    }
+
     func testFirstMatchFollowsSidebarOrder() {
         XCTAssertEqual(SidebarSearch.firstMatch(projects: catalog, query: "now"), .server("srv_web"))
         XCTAssertEqual(SidebarSearch.firstMatch(projects: catalog, query: "redis"), .server("srv_redis"))

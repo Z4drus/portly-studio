@@ -9,6 +9,7 @@ enum StudioCommand: Equatable {
     case newSession
     case newPane(PaneKind)
     case splitRight
+    case splitLeft
     case splitDown
     case closePane
     case toggleZoom
@@ -42,9 +43,17 @@ final class StudioWorkspace: ObservableObject {
     @Published private(set) var config: StudioConfig
     /// The session currently on screen, target of the keyboard commands.
     @Published var activeSessionID: String?
-    /// The project the detail area is about, target of the quick terminal.
+    /// The project on screen in the key window, target of the quick terminal.
     @Published var activeProjectID: String?
-    @Published var quickTerminalVisible = false
+    /// The project whose quick terminal floats over its window. In the main
+    /// window it follows you from project to project.
+    @Published var quickTerminalProjectID: String?
+    /// Projects open in a window of their own. They leave the sidebar while
+    /// the window is open. Never saved: a relaunch puts every project back.
+    @Published private(set) var detachedProjects: Set<String> = []
+    /// The session each window shows, by project id (the main window under
+    /// its own id), so its panes count as seen while it is up.
+    private var windowSessions: [String: String] = [:]
     /// The project whose environment panel floats over the detail area.
     @Published var envPanelProjectID: String?
     /// Set when the workspace wants the main window to navigate somewhere.
@@ -159,10 +168,68 @@ final class StudioWorkspace: ObservableObject {
         config.archivedProjects.contains(projectID)
     }
 
-    /// The projects the sidebar lists, in its order.
+    /// The projects the sidebar lists, in its order: neither archived nor
+    /// open in a window of their own.
     func sidebarProjects(_ projects: [Project]) -> [Project] {
         SidebarVisibility.ordered(projects, order: config.projectOrder)
-            .filter { !config.archivedProjects.contains($0.id) }
+            .filter { !config.archivedProjects.contains($0.id) && !detachedProjects.contains($0.id) }
+    }
+
+    // MARK: - Project windows
+
+    func isDetached(_ projectID: String) -> Bool {
+        detachedProjects.contains(projectID)
+    }
+
+    /// The projects open in their own window, in sidebar order.
+    func detachedProjects(_ projects: [Project]) -> [Project] {
+        SidebarVisibility.ordered(projects, order: config.projectOrder)
+            .filter { detachedProjects.contains($0.id) }
+    }
+
+    /// The project moves to a window of its own. Opening it is using it: it
+    /// comes back from the archive if it was there.
+    func markDetached(_ projectID: String) {
+        if isArchived(projectID) {
+            unarchiveProject(projectID)
+        } else {
+            touchProject(projectID)
+        }
+        detachedProjects.insert(projectID)
+    }
+
+    /// Its window closed: the project is back in the sidebar, where it was.
+    /// Its floating panels close with the window rather than reappear in
+    /// the main one.
+    func markReattached(_ projectID: String) {
+        detachedProjects.remove(projectID)
+        windowSessions.removeValue(forKey: projectID)
+        if quickTerminalProjectID == projectID { quickTerminalProjectID = nil }
+        if envPanelProjectID == projectID { envPanelProjectID = nil }
+        if talvoPanelProjectID == projectID { talvoPanelProjectID = nil }
+        if activeProjectID == projectID { activeProjectID = nil }
+    }
+
+    /// The session a project window shows, nil when it shows a server.
+    func setWindowSession(_ sessionID: String?, forProject projectID: String) {
+        windowSessions[projectID] = sessionID
+    }
+
+    /// The project a destination belongs to, if any.
+    func projectID(of selection: MainView.Selection) -> String? {
+        switch selection {
+        case .project(let id): return id
+        case .session(let id): return session(id)?.projectID
+        case .server(let id): return Supervisor.shared.project(containing: id)?.id
+        case .resources, .ports, .terminal: return nil
+        }
+    }
+
+    /// Go somewhere: the project's own window when it has one, else the
+    /// main window.
+    func navigate(to selection: MainView.Selection) {
+        if ProjectWindowCenter.shared.route(selection) { return }
+        pendingSelection = selection
     }
 
     /// The projects waiting in the archive.
@@ -174,7 +241,7 @@ final class StudioWorkspace: ObservableObject {
     func archiveProject(_ projectID: String) {
         guard !isArchived(projectID) else { return }
         mutate { $0.archivedProjects.insert(projectID) }
-        if activeProjectID == projectID { quickTerminalVisible = false }
+        if quickTerminalProjectID == projectID { quickTerminalProjectID = nil }
         if envPanelProjectID == projectID { envPanelProjectID = nil }
     }
 
@@ -236,6 +303,7 @@ final class StudioWorkspace: ObservableObject {
         let idle = supervisor.projects
             .filter { project in
                 !config.archivedProjects.contains(project.id)
+                    && !detachedProjects.contains(project.id)
                     && SidebarVisibility.shouldAutoArchive(
                         lastActivity: config.projectActivity[project.id],
                         hasRunningServer: running.contains(project.id),
@@ -317,8 +385,8 @@ final class StudioWorkspace: ObservableObject {
         if tabRuntimes[paneID] != nil {
             return terminalWorkspaceVisible && config.activeTerminalTabID == paneID
         }
-        guard let sessionID = activeSessionID, let session = session(sessionID) else { return false }
-        return session.layout.contains(paneID)
+        let shown = Set([activeSessionID].compactMap { $0 } + windowSessions.values)
+        return shown.contains { session($0)?.layout.contains(paneID) == true }
     }
 
     func activity(for paneID: String) -> PaneActivity {
@@ -525,11 +593,18 @@ final class StudioWorkspace: ObservableObject {
                let handler = view.onCloseShortcut, handler() {
                 return nil
             }
-            // ⌘1…⌘9 jump between the free terminal's tabs, as in a browser.
-            if flags == [.command], let self, self.terminalWorkspaceVisible,
+            // ⌘1…⌘9 jump between tabs, as in a browser: a project window's
+            // sessions, or the free terminal's tabs in the main window.
+            if flags == [.command], let self,
                let digit = event.charactersIgnoringModifiers.flatMap(Int.init), (1...9).contains(digit) {
-                self.selectTerminalTab(at: digit - 1)
-                return nil
+                if let model = ProjectWindowCenter.shared.model(for: event.window) {
+                    model.selectSession(at: digit - 1)
+                    return nil
+                }
+                if self.terminalWorkspaceVisible {
+                    self.selectTerminalTab(at: digit - 1)
+                    return nil
+                }
             }
             // keyCode 36 is Return; ⇧↩ must not send the message.
             if flags == [.shift], event.keyCode == 36, let handler = view.onShiftReturn, handler() {
@@ -551,6 +626,22 @@ final class StudioWorkspace: ObservableObject {
 
     func project(for session: TerminalSession) -> Project? {
         Supervisor.shared.projects.first { $0.id == session.projectID }
+    }
+
+    /// A dragged session tab takes the place of the one it passes over.
+    func moveSession(_ id: String, onto targetID: String) {
+        let next = SessionOrder.moving(id, onto: targetID, in: config.sessions)
+        guard next != config.sessions else { return }
+        mutate { $0.sessions = next }
+    }
+
+    /// One step left (-1) or right (+1) among the project's sessions.
+    func moveSession(_ id: String, by offset: Int) {
+        guard let projectID = session(id)?.projectID else { return }
+        let siblings = sessions(for: projectID)
+        guard let index = siblings.firstIndex(where: { $0.id == id }),
+              siblings.indices.contains(index + offset) else { return }
+        moveSession(id, onto: siblings[index + offset].id)
     }
 
     @discardableResult
@@ -591,6 +682,7 @@ final class StudioWorkspace: ObservableObject {
         }
         quickRuntimes.removeValue(forKey: projectID)?.terminate()
         if talvoPanelProjectID == projectID { talvoPanelProjectID = nil }
+        if quickTerminalProjectID == projectID { quickTerminalProjectID = nil }
         mutate {
             $0.projectActivity.removeValue(forKey: projectID)
             $0.archivedProjects.remove(projectID)
@@ -623,8 +715,8 @@ final class StudioWorkspace: ObservableObject {
         if talvoPanelProjectID == projectID {
             talvoPanelProjectID = nil
         } else {
-            quickTerminalVisible = false
-            envPanelProjectID = nil
+            if quickTerminalProjectID == projectID { quickTerminalProjectID = nil }
+            if envPanelProjectID == projectID { envPanelProjectID = nil }
             talvoPanelProjectID = projectID
         }
     }
@@ -658,9 +750,16 @@ final class StudioWorkspace: ObservableObject {
         return session.panes.count < config.maxPanesPerSession
     }
 
-    /// Split the focused pane (or the given one). Returns the new pane's id.
+    /// Split the focused pane (or the given one): the new terminal opens to
+    /// its right or below it, or to its left with `before`. Returns its id.
     @discardableResult
-    func split(sessionID: String, paneID: String? = nil, axis: SplitAxis, kind: PaneKind? = nil) -> String? {
+    func split(
+        sessionID: String,
+        paneID: String? = nil,
+        axis: SplitAxis,
+        before: Bool = false,
+        kind: PaneKind? = nil
+    ) -> String? {
         guard var session = session(sessionID), canAddPane(to: sessionID) else {
             NSSound.beep()
             return nil
@@ -668,7 +767,7 @@ final class StudioWorkspace: ObservableObject {
         let target = paneID ?? session.focusedPaneID ?? session.panes.last?.id
         guard let target, session.layout.contains(target) else { return nil }
         let pane = makePane(kind: kind ?? defaultPaneKind)
-        session.layout = session.layout.splitting(target, axis: axis, adding: pane)
+        session.layout = session.layout.splitting(target, axis: axis, adding: pane, before: before)
         session.focusedPaneID = pane.id
         session.zoomedPaneID = nil
         replace(session)
@@ -681,7 +780,7 @@ final class StudioWorkspace: ObservableObject {
         guard let layout = session.layout.removing(paneID) else {
             removeSession(sessionID)
             if let project = Supervisor.shared.projects.first(where: { $0.id == session.projectID }) {
-                pendingSelection = .project(project.id)
+                navigate(to: .project(project.id))
             }
             return
         }
@@ -868,15 +967,23 @@ final class StudioWorkspace: ObservableObject {
         mutate { $0.envPanelSize = size }
     }
 
-    /// The two floating panels share the top-right corner, so one at a time.
+    /// The quick terminal of the project on screen in the key window, when
+    /// it floats there.
+    private var visibleQuickRuntime: TerminalPaneRuntime? {
+        guard let projectID = activeProjectID, quickTerminalProjectID == projectID else { return nil }
+        return quickRuntimes[projectID]
+    }
+
+    /// The two floating panels share a window's top-right corner, so one at
+    /// a time per project.
     func toggleQuickTerminal() {
-        guard activeProjectID != nil else { NSSound.beep(); return }
-        if quickTerminalVisible {
-            quickTerminalVisible = false
+        guard let projectID = activeProjectID else { NSSound.beep(); return }
+        if quickTerminalProjectID == projectID {
+            quickTerminalProjectID = nil
         } else {
-            envPanelProjectID = nil
-            talvoPanelProjectID = nil
-            quickTerminalVisible = true
+            if envPanelProjectID == projectID { envPanelProjectID = nil }
+            if talvoPanelProjectID == projectID { talvoPanelProjectID = nil }
+            quickTerminalProjectID = projectID
         }
     }
 
@@ -884,8 +991,8 @@ final class StudioWorkspace: ObservableObject {
         if envPanelProjectID == projectID {
             envPanelProjectID = nil
         } else {
-            quickTerminalVisible = false
-            talvoPanelProjectID = nil
+            if quickTerminalProjectID == projectID { quickTerminalProjectID = nil }
+            if talvoPanelProjectID == projectID { talvoPanelProjectID = nil }
             envPanelProjectID = projectID
         }
     }
@@ -893,7 +1000,7 @@ final class StudioWorkspace: ObservableObject {
     /// Whether `insertIntoFocusedTerminal` has somewhere to type: the quick
     /// terminal when it shows, else a live focused pane of the session on screen.
     var canInsertIntoFocusedTerminal: Bool {
-        if quickTerminalVisible, let projectID = activeProjectID, quickRuntimes[projectID]?.isRunning == true { return true }
+        if visibleQuickRuntime?.isRunning == true { return true }
         guard let sessionID = activeSessionID else { return false }
         return focusedRuntime(sessionID: sessionID)?.isRunning == true
     }
@@ -901,7 +1008,7 @@ final class StudioWorkspace: ObservableObject {
     /// Type text into the focused pane of the active session (or the quick
     /// terminal when it is showing), without pressing Return.
     func insertIntoFocusedTerminal(_ text: String) {
-        if quickTerminalVisible, let projectID = activeProjectID, let runtime = quickRuntimes[projectID] {
+        if let runtime = visibleQuickRuntime {
             runtime.send(text: text)
             runtime.focus()
             return
@@ -937,18 +1044,24 @@ final class StudioWorkspace: ObservableObject {
     // MARK: - Commands
 
     func perform(_ command: StudioCommand) {
-        if terminalWorkspaceVisible, performInTerminalWorkspace(command) { return }
+        // The free terminal reads the shortcuts only while its window, the
+        // main one, has the keyboard; a project window keeps its own.
+        if terminalWorkspaceVisible, !ProjectWindowCenter.shared.isKeyWindowProjectWindow,
+           performInTerminalWorkspace(command) { return }
         switch command {
         case .newSession:
             guard let projectID = activeProjectID else { NSSound.beep(); return }
             let session = createSession(projectID: projectID)
-            pendingSelection = .session(session.id)
+            navigate(to: .session(session.id))
         case .newPane(let kind):
             guard let sessionID = activeSessionID else { NSSound.beep(); return }
             split(sessionID: sessionID, axis: .horizontal, kind: kind)
         case .splitRight:
             guard let sessionID = activeSessionID else { NSSound.beep(); return }
             split(sessionID: sessionID, axis: .horizontal)
+        case .splitLeft:
+            guard let sessionID = activeSessionID else { NSSound.beep(); return }
+            split(sessionID: sessionID, axis: .horizontal, before: true)
         case .splitDown:
             guard let sessionID = activeSessionID else { NSSound.beep(); return }
             split(sessionID: sessionID, axis: .vertical)
@@ -982,7 +1095,7 @@ final class StudioWorkspace: ObservableObject {
             guard let projectID = activeProjectID else { NSSound.beep(); return }
             toggleEnvPanel(projectID: projectID)
         case .clearTerminal:
-            if quickTerminalVisible, let projectID = activeProjectID, let runtime = quickRuntimes[projectID] {
+            if let runtime = visibleQuickRuntime {
                 runtime.clear()
             } else if let sessionID = activeSessionID {
                 focusedRuntime(sessionID: sessionID)?.clear()
@@ -1013,7 +1126,7 @@ final class StudioWorkspace: ObservableObject {
         case .clearTerminal:
             guard let tab = activeTerminalTab else { return true }
             tabRuntimes[tab.id]?.clear()
-        case .splitRight, .splitDown, .toggleZoom:
+        case .splitRight, .splitLeft, .splitDown, .toggleZoom:
             NSSound.beep()
         case .newSession, .toggleQuickTerminal, .editEnvironment:
             return false
@@ -1106,7 +1219,7 @@ extension StudioWorkspace {
     @discardableResult
     func revealTerminal(paneID: String) -> Bool {
         if config.terminalTabs.contains(where: { $0.id == paneID }) {
-            pendingSelection = .terminal
+            navigate(to: .terminal)
             selectTerminalTab(paneID)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
                 self?.tabRuntimes[paneID]?.focus()
@@ -1115,8 +1228,8 @@ extension StudioWorkspace {
         }
         guard let session = config.sessions.first(where: { $0.layout.contains(paneID) }) else { return false }
         if isArchived(session.projectID) { unarchiveProject(session.projectID) }
-        pendingSelection = .session(session.id)
         focusPane(sessionID: session.id, paneID: paneID)
+        navigate(to: .session(session.id))
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
             self?.paneRuntimes[paneID]?.focus()
         }
@@ -1125,7 +1238,9 @@ extension StudioWorkspace {
 
     /// The terminal you are looking at, to link by hand.
     func terminalOnScreen() -> String? {
-        if terminalWorkspaceVisible { return config.activeTerminalTabID }
+        if terminalWorkspaceVisible, !ProjectWindowCenter.shared.isKeyWindowProjectWindow {
+            return config.activeTerminalTabID
+        }
         guard let sessionID = activeSessionID, let session = session(sessionID) else { return nil }
         return session.focusedPaneID ?? session.panes.first?.id
     }

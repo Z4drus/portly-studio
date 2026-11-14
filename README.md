@@ -76,6 +76,15 @@ the maintainer's Apple ID and team identifier out of every downloaded copy.
   terminals split right or down (⌘D / ⇧⌘D), resizable, zoomable (⇧⌘↩), with per-session text size
   (⌘+ / ⌘−). Layouts persist in `~/.config/portly/studio.json` and shells respawn when a session is
   reopened.
+- **A project in its own window** — right-click a project and choose *Open in Separate Window*, or
+  click the ↗ next to its **+**: the project leaves the sidebar for a window you can put on any
+  screen. A thin rail of icons on the left switches between the code and each server (its state as a
+  dot, its port under it); the sessions sit as slim tabs along the top: ⌘1…⌘9 or a click to switch,
+  drag to reorder, double-click to rename, **+** for a new one at the right end. Each session still
+  splits left (⌥⌘D), right (⌘D) or down (⇧⌘D), and the toolbar is the main window's. Closing the
+  window brings the project back to the sidebar, sessions and servers still running; a search for it
+  meanwhile says where it went. Nothing about these windows is saved but their frame: after a quit
+  or a reboot every project is back in the sidebar.
 - **Agent presets** — a new terminal starts Claude Code (bypass permissions by default), Codex,
   Cursor Agent, Gemini CLI, a custom command, or a bare shell. Settings → Code.
 - **A sidebar in your order** — drag a project header to move it (or *Move Up* / *Move Down* in its
