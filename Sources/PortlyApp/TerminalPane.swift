@@ -102,9 +102,12 @@ final class DeferredResizeHost: NSView {
 /// scrollback and keyboard focus survive switching servers or closing the window.
 struct TerminalPane: NSViewRepresentable {
     let runtime: ServerRuntime
+    /// Edge to edge, square and unframed, as in a project window; otherwise
+    /// a rounded card inset from the edges.
+    var fullBleed = false
 
     func makeNSView(context: Context) -> NSView {
-        let container = ContainerView()
+        let container = ContainerView(fullBleed: fullBleed)
         container.embed(runtime.terminalView())
         return container
     }
@@ -119,6 +122,13 @@ struct TerminalPane: NSViewRepresentable {
         private let surface = NSView()
         private let host = DeferredResizeHost()
         private weak var current: NSView?
+        private var fullBleed = false
+
+        init(fullBleed: Bool) {
+            self.fullBleed = fullBleed
+            super.init(frame: .zero)
+            configureSurface()
+        }
 
         override init(frame frameRect: NSRect) {
             super.init(frame: frameRect)
@@ -133,15 +143,15 @@ struct TerminalPane: NSViewRepresentable {
         private func configureSurface() {
             surface.translatesAutoresizingMaskIntoConstraints = false
             surface.wantsLayer = true
-            surface.layer?.cornerRadius = TerminalTheme.cornerRadius
+            surface.layer?.cornerRadius = fullBleed ? 0 : TerminalTheme.cornerRadius
             surface.layer?.cornerCurve = .continuous
             surface.layer?.masksToBounds = true
             surface.layer?.backgroundColor = TerminalTheme.background.cgColor
-            surface.layer?.borderWidth = 1
+            surface.layer?.borderWidth = fullBleed ? 0 : 1
             surface.layer?.borderColor = TerminalTheme.border.cgColor
             addSubview(surface)
 
-            let inset = TerminalTheme.surfaceInset
+            let inset = fullBleed ? 0 : TerminalTheme.surfaceInset
             NSLayoutConstraint.activate([
                 surface.leadingAnchor.constraint(equalTo: leadingAnchor, constant: inset),
                 surface.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -inset),
@@ -151,7 +161,7 @@ struct TerminalPane: NSViewRepresentable {
 
             host.translatesAutoresizingMaskIntoConstraints = false
             surface.addSubview(host)
-            let text = TerminalTheme.textInset
+            let text = fullBleed ? TerminalTheme.surfaceInset : TerminalTheme.textInset
             NSLayoutConstraint.activate([
                 host.leadingAnchor.constraint(equalTo: surface.leadingAnchor, constant: text),
                 host.trailingAnchor.constraint(equalTo: surface.trailingAnchor, constant: -text),

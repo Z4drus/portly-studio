@@ -36,6 +36,12 @@ struct ProjectWindowView: View {
                         .id(project.id)
                 }
             }
+            // Text size first, just left of the Git readout.
+            if let project {
+                ToolbarItem(placement: .primaryAction) {
+                    ProjectTextSizeControl(projectID: project.id)
+                }
+            }
             if let root = project?.root, gitCenter.isRepository(root: root) {
                 ToolbarItem(placement: .primaryAction) {
                     GitToolbarButton(projectRoot: root)
@@ -143,7 +149,7 @@ private struct ProjectWindowBody: View {
             CodeSpace(model: model)
         case .server(let id):
             if let runtime = supervisor.runtime(for: id) {
-                ServerDetail(runtime: runtime) { edit(runtime) }
+                ServerDetail(runtime: runtime, onEdit: { edit(runtime) }, fullBleedTerminal: true)
                     .id(id)
             } else {
                 VStack(spacing: 8) {
@@ -297,8 +303,12 @@ private struct ProjectRail: View {
 
             Spacer(minLength: 8)
 
-            RailIconButton(icon: .arrowDownLeft, help: "Back to the sidebar (closes this window)") {
-                ProjectWindowCenter.shared.close(projectID: project.id)
+            RailIconButton(
+                icon: .arrowDownLeft,
+                help: "Back to the main window, on this same session or server",
+                monochrome: true
+            ) {
+                ProjectWindowCenter.shared.returnToMainWindow(projectID: project.id)
             }
         }
         .padding(.top, 10)
@@ -454,13 +464,14 @@ private struct ServerRailButton: View {
 private struct RailIconButton: View {
     let icon: AppIcon
     let help: String
+    var monochrome = false
     let action: () -> Void
 
     @State private var hovering = false
 
     var body: some View {
         Button(action: action) {
-            NucleoIconView(icon, size: 11)
+            NucleoIconView(icon, size: 11, monochrome: monochrome)
                 .foregroundStyle(hovering ? Color.primary : Color.secondary)
                 .frame(width: 30, height: 26)
                 .background {
@@ -474,5 +485,39 @@ private struct RailIconButton: View {
         .animation(Motion.hover, value: hovering)
         .help(help)
         .accessibilityLabel(help)
+    }
+}
+
+// MARK: - Toolbar
+
+/// Bigger or smaller text in every terminal of the project at once: its
+/// sessions, its quick terminal and its servers.
+private struct ProjectTextSizeControl: View {
+    let projectID: String
+
+    @ObservedObject private var workspace = StudioWorkspace.shared
+
+    var body: some View {
+        HStack(spacing: 2) {
+            Button {
+                workspace.adjustProjectFontSize(projectID: projectID, by: -1)
+            } label: {
+                NucleoLabel("Smaller Text", icon: .textSmaller)
+            }
+            .help("Smaller text in every terminal of this project (⌘−)")
+            Text("\(Int(workspace.projectFontSize(projectID)))")
+                .font(PortlyTypography.metric)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+                .frame(width: 22)
+                .help("Text size of this project's terminals (⌘0 goes back to the default)")
+                .accessibilityLabel("Text size \(Int(workspace.projectFontSize(projectID)))")
+            Button {
+                workspace.adjustProjectFontSize(projectID: projectID, by: 1)
+            } label: {
+                NucleoLabel("Bigger Text", icon: .textBigger)
+            }
+            .help("Bigger text in every terminal of this project (⌘+)")
+        }
     }
 }

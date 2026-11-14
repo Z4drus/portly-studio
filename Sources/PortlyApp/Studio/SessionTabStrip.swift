@@ -87,7 +87,8 @@ struct SessionTabStrip: View {
 }
 
 /// One session tab. A click shows it on the spot; a double-click renames it;
-/// the cross appears on hover.
+/// the cross appears on hover at the right end, where the spinner or the dot
+/// sits otherwise.
 private struct SessionTabButton: View {
     let session: TerminalSession
     let index: Int
@@ -126,7 +127,6 @@ private struct SessionTabButton: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            closeButton
             NucleoIconView(iconID, size: 10)
                 .foregroundStyle(isActive ? Color.accentColor : Color.secondary)
             if editing {
@@ -153,10 +153,10 @@ private struct SessionTabButton: View {
                     .monospacedDigit()
                     .help("\(session.panes.count) terminals")
             }
-            statusIndicator
+            trailingSlot
         }
-        .padding(.leading, 4)
-        .padding(.trailing, 9)
+        .padding(.leading, 10)
+        .padding(.trailing, 5)
         .frame(width: width, height: SessionTabStrip.height)
         .background {
             Self.shape.fill(
@@ -201,8 +201,20 @@ private struct SessionTabButton: View {
         }
     }
 
-    /// Shown on hover only, in a space that never changes, so the name does
-    /// not shift and a stray click on the active tab closes nothing.
+    /// One fixed square at the right end: the activity at rest, the cross
+    /// under the pointer. Nothing shifts, and a stray click on the active
+    /// tab closes nothing.
+    private var trailingSlot: some View {
+        ZStack {
+            statusIndicator
+                .opacity(hovering ? 0 : 1)
+            closeButton
+                .opacity(hovering ? 1 : 0)
+                .allowsHitTesting(hovering)
+        }
+        .frame(width: 16, height: 16)
+    }
+
     private var closeButton: some View {
         Button {
             model.closeSession(session.id)
@@ -217,7 +229,6 @@ private struct SessionTabButton: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .opacity(hovering ? 1 : 0)
         .onHover { hoveringClose = $0 }
         .animation(Motion.hover, value: hoveringClose)
         .help("Close session")

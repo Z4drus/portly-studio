@@ -215,6 +215,11 @@ final class StudioWorkspace: ObservableObject {
         windowSessions[projectID] = sessionID
     }
 
+    /// True while some window shows the session.
+    func isSessionShown(_ sessionID: String) -> Bool {
+        windowSessions.values.contains(sessionID)
+    }
+
     /// The project a destination belongs to, if any.
     func projectID(of selection: MainView.Selection) -> String? {
         switch selection {
@@ -688,6 +693,7 @@ final class StudioWorkspace: ObservableObject {
             $0.archivedProjects.remove(projectID)
             $0.projectOrder.removeAll { $0 == projectID }
             $0.talvoLinks.removeValue(forKey: projectID)
+            $0.projectFontSizes.removeValue(forKey: projectID)
         }
     }
 
@@ -839,7 +845,42 @@ final class StudioWorkspace: ObservableObject {
     // MARK: - Text size
 
     func fontSize(for session: TerminalSession) -> Double {
-        session.fontSize ?? config.fontSize
+        session.fontSize ?? projectFontSize(session.projectID)
+    }
+
+    /// The text size a project's terminals share, set from its window.
+    func projectFontSize(_ projectID: String) -> Double {
+        config.projectFontSizes[projectID] ?? config.fontSize
+    }
+
+    /// Bigger or smaller text in every terminal of the project at once: its
+    /// sessions, its quick terminal and its servers.
+    func adjustProjectFontSize(projectID: String, by delta: Double) {
+        let next = min(max(projectFontSize(projectID) + delta, StudioConfig.minimumFontSize), StudioConfig.maximumFontSize)
+        setProjectFontSize(projectID: projectID, to: next)
+    }
+
+    func resetProjectFontSize(projectID: String) {
+        setProjectFontSize(projectID: projectID, to: nil)
+    }
+
+    private func setProjectFontSize(projectID: String, to size: Double?) {
+        mutate { config in
+            config.projectFontSizes[projectID] = size
+            // One size for the whole project: per-session sizes give way.
+            for index in config.sessions.indices where config.sessions[index].projectID == projectID {
+                config.sessions[index].fontSize = nil
+            }
+        }
+        let applied = CGFloat(projectFontSize(projectID))
+        for session in sessions(for: projectID) {
+            for pane in session.panes { paneRuntimes[pane.id]?.setFontSize(applied) }
+        }
+        quickRuntimes[projectID]?.setFontSize(applied)
+        let supervisor = Supervisor.shared
+        for server in supervisor.projects.first(where: { $0.id == projectID })?.servers ?? [] {
+            supervisor.runtime(for: server.id)?.applyTerminalFontSize()
+        }
     }
 
     func adjustFontSize(sessionID: String, by delta: Double) {
@@ -852,7 +893,7 @@ final class StudioWorkspace: ObservableObject {
     func resetFontSize(sessionID: String) {
         guard let session = session(sessionID) else { return }
         update(sessionID) { $0.fontSize = nil }
-        applyFontSize(config.fontSize, to: session)
+        applyFontSize(projectFontSize(session.projectID), to: session)
     }
 
     private func applyFontSize(_ size: Double, to session: TerminalSession) {
@@ -953,7 +994,7 @@ final class StudioWorkspace: ObservableObject {
             kind: .shell,
             launchCommand: nil,
             initialTitle: "Quick terminal",
-            fontSize: CGFloat(config.fontSize)
+            fontSize: CGFloat(projectFontSize(project.id))
         )
         quickRuntimes[project.id] = runtime
         return runtime
@@ -1027,10 +1068,10 @@ final class StudioWorkspace: ObservableObject {
         let previousFont = config.fontSize
         mutate(change)
         if config.fontSize != previousFont {
-            for session in config.sessions where session.fontSize == nil {
+            for session in config.sessions where session.fontSize == nil && config.projectFontSizes[session.projectID] == nil {
                 applyFontSize(config.fontSize, to: session)
             }
-            for runtime in quickRuntimes.values {
+            for (projectID, runtime) in quickRuntimes where config.projectFontSizes[projectID] == nil {
                 runtime.setFontSize(CGFloat(config.fontSize))
             }
             if config.terminalFontSize == nil {
@@ -1080,15 +1121,22 @@ final class StudioWorkspace: ObservableObject {
         case .focusPrevious:
             guard let sessionID = activeSessionID else { return }
             focusAdjacent(sessionID: sessionID, offset: -1)
-        case .biggerText:
+        case .biggerText, .smallerText, .resetText:
+            // In a project window the whole project changes size together.
+            if ProjectWindowCenter.shared.isKeyWindowProjectWindow, let projectID = activeProjectID {
+                if command == .resetText {
+                    resetProjectFontSize(projectID: projectID)
+                } else {
+                    adjustProjectFontSize(projectID: projectID, by: command == .biggerText ? 1 : -1)
+                }
+                return
+            }
             guard let sessionID = activeSessionID else { return }
-            adjustFontSize(sessionID: sessionID, by: 1)
-        case .smallerText:
-            guard let sessionID = activeSessionID else { return }
-            adjustFontSize(sessionID: sessionID, by: -1)
-        case .resetText:
-            guard let sessionID = activeSessionID else { return }
-            resetFontSize(sessionID: sessionID)
+            if command == .resetText {
+                resetFontSize(sessionID: sessionID)
+            } else {
+                adjustFontSize(sessionID: sessionID, by: command == .biggerText ? 1 : -1)
+            }
         case .toggleQuickTerminal:
             toggleQuickTerminal()
         case .editEnvironment:

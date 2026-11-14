@@ -124,9 +124,12 @@ enum IconImageCache {
     private static var images: [String: NSImage] = [:]
     private static let lock = NSLock()
 
-    static func image(for id: String) -> NSImage? {
+    /// `monochrome` drops the second tone: every path at full ink, for a
+    /// glyph that reads as one shape (an arrow whose shaft matches its head).
+    static func image(for id: String, monochrome: Bool = false) -> NSImage? {
+        let key = monochrome ? id + "#mono" : id
         lock.lock()
-        if let cached = images[id] {
+        if let cached = images[key] {
             lock.unlock()
             return cached
         }
@@ -139,13 +142,20 @@ enum IconImageCache {
                 withExtension: "svg",
                 subdirectory: "Icons/\(parts[0])"
               ),
-              let image = NSImage(contentsOf: url)
+              let image = monochrome ? flattenedImage(at: url) : NSImage(contentsOf: url)
         else { return nil }
         image.isTemplate = true
         lock.lock()
-        images[id] = image
+        images[key] = image
         lock.unlock()
         return image
+    }
+
+    /// The SVG with its secondary-tone opacity removed.
+    private static func flattenedImage(at url: URL) -> NSImage? {
+        guard let svg = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        let flat = svg.replacingOccurrences(of: #"\s(fill-)?opacity="[0-9.]+""#, with: "", options: .regularExpression)
+        return NSImage(data: Data(flat.utf8))
     }
 }
 
@@ -155,19 +165,23 @@ enum IconImageCache {
 struct NucleoIconView: View {
     let id: String
     var size: CGFloat = 14
+    /// One tone instead of the duo look.
+    var monochrome = false
 
     init(_ id: String, size: CGFloat = 14) {
         self.id = id
         self.size = size
     }
 
-    init(_ icon: AppIcon, size: CGFloat = 14) {
+    init(_ icon: AppIcon, size: CGFloat = 14, monochrome: Bool = false) {
         self.id = icon.rawValue
         self.size = size
+        self.monochrome = monochrome
     }
 
     var body: some View {
-        if let image = IconImageCache.image(for: id) ?? IconImageCache.image(for: AppIcon.projectDefault.rawValue) {
+        if let image = IconImageCache.image(for: id, monochrome: monochrome)
+            ?? IconImageCache.image(for: AppIcon.projectDefault.rawValue) {
             Image(nsImage: image)
                 .renderingMode(.template)
                 .resizable()

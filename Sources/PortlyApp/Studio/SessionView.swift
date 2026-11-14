@@ -57,6 +57,7 @@ private struct SessionContentView: View {
             SplitLayoutView(
                 layout: session.layout,
                 zoomedPaneID: session.zoomedPaneID,
+                compact: !showsSessionBar,
                 onRatioChange: { splitID, ratio in
                     workspace.setRatio(sessionID: session.id, splitID: splitID, ratio: ratio)
                 },
@@ -68,12 +69,13 @@ private struct SessionContentView: View {
                             runtime: workspace.runtime(for: pane, in: session),
                             isFocused: session.focusedPaneID == pane.id,
                             isZoomed: session.zoomedPaneID == pane.id,
-                            canSplit: workspace.canAddPane(to: session.id)
+                            canSplit: workspace.canAddPane(to: session.id),
+                            fullBleed: !showsSessionBar
                         )
                     )
                 }
             )
-            .padding(showsSessionBar ? 8 : 6)
+            .padding(showsSessionBar ? 8 : 0)
             .animation(Motion.paneSwap, value: session.layout.paneIDs)
             .animation(Motion.paneSwap, value: session.zoomedPaneID)
         }
@@ -96,8 +98,14 @@ private struct SessionContentView: View {
             focusCurrentPane(session)
         }
         .onDisappear {
-            if workspace.activeSessionID == session.id {
-                workspace.activeSessionID = nil
+            // Checked a beat later: the same session may already be showing
+            // in another window (a project window handing it back to the
+            // main one), and must stay the active one there.
+            let id = session.id
+            DispatchQueue.main.async {
+                if workspace.activeSessionID == id, !workspace.isSessionShown(id) {
+                    workspace.activeSessionID = nil
+                }
             }
         }
     }
@@ -347,10 +355,26 @@ private struct PaneView: View {
     let isFocused: Bool
     let isZoomed: Bool
     let canSplit: Bool
+    /// In a project window: square, edge to edge, no card around it, and
+    /// focus shown by a hairline of accent only when there is a choice.
+    var fullBleed = false
 
     @ObservedObject private var workspace = StudioWorkspace.shared
     @State private var hovering = false
     @State private var confirmingReset = false
+
+    private var cornerRadius: CGFloat { fullBleed ? 0 : 10 }
+
+    private var outline: Color {
+        if fullBleed {
+            return isFocused && session.panes.count > 1 && !isZoomed ? Color.accentColor.opacity(0.38) : Color.clear
+        }
+        return isFocused ? Color.accentColor.opacity(0.75) : Color(nsColor: TerminalTheme.border)
+    }
+
+    private var outlineWidth: CGFloat {
+        fullBleed ? 1 : (isFocused ? 1.5 : 1)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -372,13 +396,11 @@ private struct PaneView: View {
             }
         }
         .background(Color(nsColor: TerminalTheme.background))
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(
-                    isFocused ? Color.accentColor.opacity(0.75) : Color(nsColor: TerminalTheme.border),
-                    lineWidth: isFocused ? 1.5 : 1
-                )
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .strokeBorder(outline, lineWidth: outlineWidth)
+                .allowsHitTesting(false)
         }
         .animation(Motion.state, value: isFocused)
         .animation(Motion.paneSwap, value: runtime.isRunning)

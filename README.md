@@ -80,11 +80,15 @@ the maintainer's Apple ID and team identifier out of every downloaded copy.
   click the ↗ next to its **+**: the project leaves the sidebar for a window you can put on any
   screen. A thin rail of icons on the left switches between the code and each server (its state as a
   dot, its port under it); the sessions sit as slim tabs along the top: ⌘1…⌘9 or a click to switch,
-  drag to reorder, double-click to rename, **+** for a new one at the right end. Each session still
-  splits left (⌥⌘D), right (⌘D) or down (⇧⌘D), and the toolbar is the main window's. Closing the
-  window brings the project back to the sidebar, sessions and servers still running; a search for it
-  meanwhile says where it went. Nothing about these windows is saved but their frame: after a quit
-  or a reboot every project is back in the sidebar.
+  drag to reorder, double-click to rename, a cross on the right on hover, **+** for a new one at the
+  right end. The terminals fill the window edge to edge, square, parted by hairlines, the focused one
+  outlined by a faint line of accent. Each session still splits left (⌥⌘D), right (⌘D) or down
+  (⇧⌘D), and the toolbar is the main window's plus a text size for every terminal of the project
+  (⌘+ / ⌘−, servers included). The ↙ at the bottom of the rail closes the window and opens the same
+  session or server in the main window; closing it otherwise brings the project back to the sidebar,
+  sessions and servers still running, and a search for it meanwhile says where it went. Nothing
+  about these windows is saved but their frame: after a quit or a reboot every project is back in
+  the sidebar.
 - **Agent presets** — a new terminal starts Claude Code (bypass permissions by default), Codex,
   Cursor Agent, Gemini CLI, a custom command, or a bare shell. Settings → Code.
 - **A sidebar in your order** — drag a project header to move it (or *Move Up* / *Move Down* in its

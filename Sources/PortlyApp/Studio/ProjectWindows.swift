@@ -207,6 +207,26 @@ final class ProjectWindowCenter: NSObject, NSWindowDelegate {
         windows[projectID]?.performClose(nil)
     }
 
+    /// Close the window and carry on in the main window where this one was:
+    /// the same session (its focused terminal kept), or the same server.
+    func returnToMainWindow(projectID: String) {
+        guard let model = models[projectID] else { return }
+        let workspace = StudioWorkspace.shared
+        let place: MainView.Selection
+        switch model.space {
+        case .code:
+            place = model.currentSession(in: workspace.sessions(for: projectID)).map { .session($0.id) }
+                ?? .project(projectID)
+        case .server(let id):
+            place = .server(id)
+        }
+        close(projectID: projectID)
+        // The close is synchronous: the project is back in the sidebar by
+        // now, so the destination lands in the main window.
+        workspace.navigate(to: place)
+        WindowOpener.openMainWindow()
+    }
+
     func bringToFront(projectID: String) {
         guard let window = windows[projectID] else { return }
         if window.isMiniaturized { window.deminiaturize(nil) }

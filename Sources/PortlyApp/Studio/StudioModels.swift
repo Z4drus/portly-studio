@@ -389,6 +389,10 @@ struct StudioConfig: Codable {
     var terminalFontSize: Double?
     /// Which Talvo project each Portly project mirrors, by Portly project id.
     var talvoLinks: [String: String]
+    /// Text size shared by every terminal of a project (its sessions, quick
+    /// terminal and servers), set from its own window. Missing follows the
+    /// global default.
+    var projectFontSizes: [String: Double]
 
     /// Version 2 rebuilt the activity dates from real exchanges and made the
     /// archive an explicit list.
@@ -419,7 +423,8 @@ struct StudioConfig: Codable {
         terminalTabs: [TerminalTab] = [],
         activeTerminalTabID: String? = nil,
         terminalFontSize: Double? = nil,
-        talvoLinks: [String: String] = [:]
+        talvoLinks: [String: String] = [:],
+        projectFontSizes: [String: Double] = [:]
     ) {
         self.version = version
         self.defaultAgent = defaultAgent
@@ -440,6 +445,7 @@ struct StudioConfig: Codable {
         self.activeTerminalTabID = activeTerminalTabID
         self.terminalFontSize = terminalFontSize
         self.talvoLinks = talvoLinks
+        self.projectFontSizes = projectFontSizes
     }
 
     init(from decoder: Decoder) throws {
@@ -463,6 +469,7 @@ struct StudioConfig: Codable {
         activeTerminalTabID = try c.decodeIfPresent(String.self, forKey: .activeTerminalTabID)
         terminalFontSize = try c.decodeIfPresent(Double.self, forKey: .terminalFontSize)
         talvoLinks = try c.decodeIfPresent([String: String].self, forKey: .talvoLinks) ?? [:]
+        projectFontSizes = try c.decodeIfPresent([String: Double].self, forKey: .projectFontSizes) ?? [:]
     }
 
     /// The command a new agent pane types, or nil for a bare shell.

@@ -138,6 +138,13 @@ struct MainView: View {
             agentSetup.refresh()
             systemAccess.refresh()
             applyPendingSelection()
+            // A destination sent while this window was closed, such as a
+            // project window handing its session back.
+            if let pending = workspace.pendingSelection {
+                workspace.pendingSelection = nil
+                revealInSidebar(pending)
+                selection = pending
+            }
             restoreLastSelection()
             syncWorkspaceContext()
             workspace.prepareSidebarAtLaunch(projects: supervisor.projects)
@@ -187,6 +194,7 @@ struct MainView: View {
             guard let pending = workspace.pendingSelection else { return }
             workspace.pendingSelection = nil
             if ProjectWindowCenter.shared.route(pending) { return }
+            revealInSidebar(pending)
             selection = pending
         }
         .sheet(isPresented: $addingProject) {
@@ -860,6 +868,19 @@ struct MainView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    /// A session or server shown from elsewhere gets its row in view: its
+    /// project unfolds if it was collapsed.
+    private func revealInSidebar(_ destination: Selection) {
+        switch destination {
+        case .session, .server:
+            if let projectID = workspace.projectID(of: destination), collapsedProjects.contains(projectID) {
+                toggleCollapsed(projectID)
+            }
+        default:
+            break
+        }
+    }
+
     private func applyPendingSelection() {
         guard let pending = appSelection.pending else { return }
         appSelection.pending = nil
@@ -923,7 +944,7 @@ private struct ProjectHeader: View {
                         .transition(.opacity)
                 }
                 Button(action: onOpenWindow) {
-                    NucleoIconView(.arrowUpRight, size: 9)
+                    NucleoIconView(.arrowUpRight, size: 9, monochrome: true)
                         .foregroundStyle(hoveringOpenWindow ? Color.primary : Color.secondary)
                         .frame(width: 20, height: 20)
                         .background {
@@ -1030,9 +1051,9 @@ private struct DetachedProjectNotice: View {
             }
             HStack(spacing: 8) {
                 Button {
-                    ProjectWindowCenter.shared.close(projectID: project.id)
+                    ProjectWindowCenter.shared.returnToMainWindow(projectID: project.id)
                 } label: {
-                    NucleoLabel("Close Its Window", icon: .arrowDownLeft, size: 11)
+                    NucleoLabel("Bring It Back Here", icon: .arrowDownLeft, size: 11)
                 }
                 .controlSize(.large)
                 Button {

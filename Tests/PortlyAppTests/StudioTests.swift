@@ -126,6 +126,18 @@ final class TerminalTabTests: XCTestCase {
         XCTAssertEqual(config.terminalTabs, [])
         XCTAssertNil(config.activeTerminalTabID)
         XCTAssertNil(config.terminalFontSize)
+        XCTAssertEqual(config.projectFontSizes, [:], "no project has a text size of its own yet")
+    }
+
+    func testProjectTextSizesSurviveARoundTrip() throws {
+        var config = StudioConfig()
+        config.projectFontSizes = ["prj_a": 15]
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let decoded = try decoder.decode(StudioConfig.self, from: encoder.encode(config))
+        XCTAssertEqual(decoded.projectFontSizes, ["prj_a": 15])
     }
 
     func testTabsSurviveARoundTrip() throws {

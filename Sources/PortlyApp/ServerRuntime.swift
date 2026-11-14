@@ -271,9 +271,24 @@ final class ServerRuntime: NSObject, ObservableObject, LocalProcessDelegate, Ter
         let view = TerminalView(frame: CGRect(x: 0, y: 0, width: 800, height: 480))
         view.terminalDelegate = self
         view.optionAsMetaKey = false
-        TerminalStyling.apply(to: view, fontSize: 13)
+        TerminalStyling.apply(to: view, fontSize: terminalFontSize)
         terminal = view
         return view
+    }
+
+    /// The server terminal's text size: the project's own when its window
+    /// set one, else the size server output has always used.
+    static let defaultTerminalFontSize: CGFloat = 13
+    private var terminalFontSize: CGFloat {
+        StudioWorkspace.shared.config.projectFontSizes[projectID].map { CGFloat($0) }
+            ?? Self.defaultTerminalFontSize
+    }
+
+    /// Re-reads the project's text size, after its window changed it.
+    func applyTerminalFontSize() {
+        let size = terminalFontSize
+        guard let terminal, terminal.font.pointSize != size else { return }
+        terminal.font = TerminalStyling.font(size: size)
     }
 
     // MARK: - Lifecycle

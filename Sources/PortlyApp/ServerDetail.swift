@@ -6,6 +6,8 @@ import SwiftUI
 struct ServerDetail: View {
     @ObservedObject var runtime: ServerRuntime
     let onEdit: () -> Void
+    /// The terminal fills the area edge to edge, as in a project window.
+    var fullBleedTerminal = false
 
     @EnvironmentObject private var supervisor: Supervisor
     @State private var conflict: PortOccupant?
@@ -51,7 +53,7 @@ struct ServerDetail: View {
                 stoppedState
                     .transition(.opacity)
             } else {
-                TerminalPane(runtime: runtime)
+                TerminalPane(runtime: runtime, fullBleed: fullBleedTerminal)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .transition(.opacity)
             }
