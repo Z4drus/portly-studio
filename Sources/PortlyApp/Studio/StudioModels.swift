@@ -209,6 +209,32 @@ enum SessionOrder {
     }
 }
 
+/// What becomes of the last run's sessions when Portly starts.
+enum LaunchSessions {
+    struct Plan: Equatable {
+        /// Sessions that stay and start at once: an agent left a resume note
+        /// for one of their conversations, asking to carry on after a quit.
+        var kept: [TerminalSession]
+        /// The projects that get a fresh session, in sidebar order: every
+        /// listed one that keeps nothing.
+        var freshSessionProjects: [String]
+    }
+
+    /// Everything else is put away. A Claude conversation lives on in its
+    /// transcript and comes back from Chats; a shell has nothing to keep.
+    static func plan(
+        sessions: [TerminalSession],
+        listedProjects: [String],
+        resumeNoteIDs: Set<String>
+    ) -> Plan {
+        let kept = sessions.filter { session in
+            session.panes.contains { pane in pane.agentSessionID.map(resumeNoteIDs.contains) == true }
+        }
+        let covered = Set(kept.map(\.projectID))
+        return Plan(kept: kept, freshSessionProjects: listedProjects.filter { !covered.contains($0) })
+    }
+}
+
 // MARK: - Free terminal tabs
 
 /// One tab of the free terminal: a login shell that belongs to no project and
@@ -363,8 +389,14 @@ struct StudioConfig: Codable {
     var quickTerminalSize: CGSize
     var envPanelSize: CGSize
     /// Respawn every session's shells at launch and resume their agents, so
-    /// the app comes back exactly where it was.
-    var reopenSessionsAtLaunch: Bool
+    /// the app comes back exactly where it was. Off, a launch puts the
+    /// sessions away (their Claude conversations wait under Chats) and gives
+    /// each project in the sidebar one fresh session that starts only when
+    /// it is opened.
+    ///
+    /// Stored under a new key: the old `reopenSessionsAtLaunch` was on for
+    /// everybody and is deliberately no longer read.
+    var restoreSessionsAtLaunch: Bool
     /// Pre-approve a new project's folder in Claude Code, so its workspace trust
     /// dialog never interrupts the first agent terminal opened there.
     var trustNewProjectsInClaudeCode: Bool
@@ -413,7 +445,7 @@ struct StudioConfig: Codable {
         maxPanesPerSession: Int = 5,
         quickTerminalSize: CGSize = CGSize(width: 560, height: 360),
         envPanelSize: CGSize = CGSize(width: 760, height: 520),
-        reopenSessionsAtLaunch: Bool = true,
+        restoreSessionsAtLaunch: Bool = false,
         trustNewProjectsInClaudeCode: Bool = true,
         sessions: [TerminalSession] = [],
         projectActivity: [String: Date] = [:],
@@ -434,7 +466,7 @@ struct StudioConfig: Codable {
         self.maxPanesPerSession = maxPanesPerSession
         self.quickTerminalSize = quickTerminalSize
         self.envPanelSize = envPanelSize
-        self.reopenSessionsAtLaunch = reopenSessionsAtLaunch
+        self.restoreSessionsAtLaunch = restoreSessionsAtLaunch
         self.trustNewProjectsInClaudeCode = trustNewProjectsInClaudeCode
         self.sessions = sessions
         self.projectActivity = projectActivity
@@ -458,7 +490,7 @@ struct StudioConfig: Codable {
         maxPanesPerSession = try c.decodeIfPresent(Int.self, forKey: .maxPanesPerSession) ?? 5
         quickTerminalSize = try c.decodeIfPresent(CGSize.self, forKey: .quickTerminalSize) ?? CGSize(width: 560, height: 360)
         envPanelSize = try c.decodeIfPresent(CGSize.self, forKey: .envPanelSize) ?? CGSize(width: 760, height: 520)
-        reopenSessionsAtLaunch = try c.decodeIfPresent(Bool.self, forKey: .reopenSessionsAtLaunch) ?? true
+        restoreSessionsAtLaunch = try c.decodeIfPresent(Bool.self, forKey: .restoreSessionsAtLaunch) ?? false
         trustNewProjectsInClaudeCode = try c.decodeIfPresent(Bool.self, forKey: .trustNewProjectsInClaudeCode) ?? true
         sessions = try c.decodeIfPresent([TerminalSession].self, forKey: .sessions) ?? []
         projectActivity = try c.decodeIfPresent([String: Date].self, forKey: .projectActivity) ?? [:]
@@ -665,6 +697,13 @@ enum ResumeNotes {
         }
         let cleaned = sanitized(note)
         return cleaned.isEmpty ? nil : cleaned
+    }
+
+    /// The conversations a note waits for, read without delivering anything.
+    static func pendingSessionIDs(url: URL = defaultURL) -> Set<String> {
+        guard let data = try? Data(contentsOf: url),
+              let notes = try? JSONDecoder().decode([String: String].self, from: data) else { return [] }
+        return Set(notes.keys)
     }
 
     /// One line, bounded: the note is typed into a shell.

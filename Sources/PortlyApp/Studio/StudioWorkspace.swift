@@ -34,8 +34,9 @@ enum PaneActivity: Equatable {
 
 /// Owns every coding session and terminal pane in the app.
 ///
-/// Sessions persist their shape (panes, splits, focus) in `studio.json`; the
-/// shells themselves are respawned lazily the first time a restored session is
+/// Sessions persist their shape (panes, splits, focus) in `studio.json`. A
+/// launch puts the last run's sessions away and gives each project in the
+/// sidebar one fresh session; a shell is spawned only when its session is
 /// shown. Everything here runs on the main thread.
 final class StudioWorkspace: ObservableObject {
     static let shared = StudioWorkspace()
@@ -71,8 +72,14 @@ final class StudioWorkspace: ObservableObject {
     @Published var terminalWorkspaceVisible = false
     /// The project whose Talvo mirror covers the detail area.
     @Published var talvoPanelProjectID: String?
-    private var reopenedAtLaunch = false
+    /// Projects folded in the sidebar. Never saved: every project comes back
+    /// unfolded at launch, its fresh session in view.
+    @Published var collapsedProjects: Set<String> = []
+    private var preparedSessions = false
     private var preparedSidebar = false
+    /// The project of each session put away at launch, so a selection
+    /// remembered on one of them lands on its project instead.
+    private var putAwaySessionProjects: [String: String] = [:]
     /// Seconds until the next idle-project sweep, counted by the activity ticker.
     private var autoArchiveCountdown = 60
 
@@ -122,7 +129,7 @@ final class StudioWorkspace: ObservableObject {
     /// Configurations written before version 2 dated projects by their
     /// transcripts' modification times, which Claude Code moves on every
     /// resume, so those dates are replaced rather than trusted.
-    func prepareSidebarAtLaunch(projects: [Project]) {
+    private func prepareSidebarAtLaunch(projects: [Project]) {
         // No projects most likely means a config that could not be read; the
         // archive and the order must survive until it can.
         guard !preparedSidebar, !projects.isEmpty else { return }
@@ -562,25 +569,65 @@ final class StudioWorkspace: ObservableObject {
         }
     }
 
-    /// Respawn every session so the app comes back where it was: shells at the
-    /// project root, Claude conversations resumed.
-    func reopenSessionsAtLaunchIfNeeded() {
-        guard !reopenedAtLaunch else { return }
-        reopenedAtLaunch = true
-        prepareSidebarAtLaunch(projects: Supervisor.shared.projects)
-        guard config.reopenSessionsAtLaunch else { return }
-        // Only what the sidebar shows. An archived project keeps its sessions,
-        // and they respawn the moment one is opened; waking an agent per
-        // session of every project ever added is what made a launch slow once
-        // the list grew.
-        for session in config.sessions {
-            guard !isArchived(session.projectID) || session.id == activeSessionID else { continue }
-            for pane in session.panes {
-                let runtime = self.runtime(for: pane, in: session)
-                runtime.muteActivity(for: 20)
-                _ = runtime.terminalView()
+    /// Once per launch, before anything is shown. The sidebar is brought up
+    /// to date first, while the last run's sessions can still tell when each
+    /// project was worked on. Then those sessions are put away: their Claude
+    /// conversations stay on disk and come back one click away under Chats,
+    /// so a launch no longer wakes an agent per session and fills the memory.
+    /// Each project the sidebar lists gets one fresh session instead, whose
+    /// shell starts only when it is opened.
+    ///
+    /// A session an agent left a resume note for is kept and started at
+    /// once: it quit Portly on purpose (to replace it) and must carry on.
+    /// With *Bring every session back* on, everything stays and the listed
+    /// projects respawn their sessions, as before.
+    func prepareSessionsAtLaunch(projects: [Project]) {
+        // No projects most likely means a config that could not be read:
+        // leave the sessions alone until it can.
+        guard !preparedSessions, !projects.isEmpty else { return }
+        preparedSessions = true
+        prepareSidebarAtLaunch(projects: projects)
+        // Folding used to be saved; it no longer is.
+        UserDefaults.standard.removeObject(forKey: "collapsedProjects")
+
+        let listed = sidebarProjects(projects).map(\.id)
+        let respawning: [TerminalSession]
+        if config.restoreSessionsAtLaunch {
+            let shown = Set(listed)
+            respawning = config.sessions.filter { shown.contains($0.projectID) }
+        } else {
+            let plan = LaunchSessions.plan(
+                sessions: config.sessions,
+                listedProjects: listed,
+                resumeNoteIDs: ResumeNotes.pendingSessionIDs()
+            )
+            let kept = Set(plan.kept.map(\.id))
+            for session in config.sessions where !kept.contains(session.id) {
+                putAwaySessionProjects[session.id] = session.projectID
+                for pane in session.panes { paneRuntimes.removeValue(forKey: pane.id)?.terminate() }
+            }
+            let fresh = plan.freshSessionProjects.map { makeSession(projectID: $0, name: "Session 1") }
+            mutate { $0.sessions = plan.kept + fresh }
+            respawning = plan.kept
+        }
+        guard !respawning.isEmpty else { return }
+        // Give the window a beat to appear before spawning shells.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            guard let self else { return }
+            for session in respawning {
+                guard let current = self.session(session.id) else { continue }
+                for pane in current.panes {
+                    let runtime = self.runtime(for: pane, in: current)
+                    runtime.muteActivity(for: 20)
+                    _ = runtime.terminalView()
+                }
             }
         }
+    }
+
+    /// The project a session put away at this launch belonged to.
+    func projectOfPutAwaySession(_ sessionID: String) -> String? {
+        putAwaySessionProjects[sessionID]
     }
 
     /// ⌘W closes the focused terminal instead of the window, iTerm-style. A
@@ -651,19 +698,28 @@ final class StudioWorkspace: ObservableObject {
 
     @discardableResult
     func createSession(projectID: String, kind: PaneKind? = nil) -> TerminalSession {
-        let existing = sessions(for: projectID).count
-        let pane = makePane(kind: kind ?? defaultPaneKind)
-        let session = TerminalSession(
+        let session = makeSession(
             projectID: projectID,
-            name: "Session \(existing + 1)",
-            layout: .leaf(pane),
-            focusedPaneID: pane.id
+            name: "Session \(sessions(for: projectID).count + 1)",
+            pane: makePane(kind: kind ?? defaultPaneKind)
         )
         mutate {
             $0.sessions.append(session)
             $0.projectActivity[projectID] = Date()
         }
         return session
+    }
+
+    /// A one-terminal session, not yet saved. Its shell starts when it is
+    /// first shown.
+    private func makeSession(projectID: String, name: String, pane: TerminalPaneConfig? = nil) -> TerminalSession {
+        let pane = pane ?? makePane(kind: defaultPaneKind)
+        return TerminalSession(projectID: projectID, name: name, layout: .leaf(pane), focusedPaneID: pane.id)
+    }
+
+    /// True once a terminal of the session has been spawned in this run.
+    func hasStarted(_ session: TerminalSession) -> Bool {
+        session.panes.contains { paneRuntimes[$0.id]?.hasStarted == true }
     }
 
     func renameSession(_ id: String, to name: String) {
@@ -694,6 +750,83 @@ final class StudioWorkspace: ObservableObject {
             $0.projectOrder.removeAll { $0 == projectID }
             $0.talvoLinks.removeValue(forKey: projectID)
             $0.projectFontSizes.removeValue(forKey: projectID)
+        }
+    }
+
+    // MARK: - Past chats
+
+    /// Where a Claude conversation is open in Portly, if it is.
+    func location(ofChat chatID: String) -> (sessionID: String, paneID: String)? {
+        for session in config.sessions {
+            if let pane = session.panes.first(where: { $0.agentSessionID == chatID }) {
+                return (session.id, pane.id)
+            }
+        }
+        return nil
+    }
+
+    /// Bring a past conversation back, from the Chats list of a session.
+    ///
+    /// Open in a terminal already, that terminal is shown. Otherwise it
+    /// takes over the session's focused Claude terminal: the shell restarts
+    /// on `claude --resume`, behind the launch screen, and the conversation
+    /// that was there waits under Chats in turn. An agent at work is never
+    /// cut off: the chat then opens in a session of its own.
+    func resumeChat(_ chat: ClaudeChat, fromSession sessionID: String) {
+        if let open = location(ofChat: chat.id) {
+            reveal(paneID: open.paneID, inSession: open.sessionID)
+            return
+        }
+        guard let session = session(sessionID) else { return }
+        let claudePanes = session.panes.filter { $0.kind == .agent && $0.launchCommand?.hasPrefix("claude") == true }
+        let target = claudePanes.first { $0.id == session.focusedPaneID } ?? claudePanes.first
+        guard let target, activity(for: target.id) != .working else {
+            let pane = TerminalPaneConfig(
+                kind: .agent,
+                launchCommand: claudeLaunchCommand,
+                title: chat.title,
+                agentSessionID: chat.id
+            )
+            let resumed = makeSession(
+                projectID: session.projectID,
+                name: "Session \(sessions(for: session.projectID).count + 1)",
+                pane: pane
+            )
+            mutate { $0.sessions.append(resumed) }
+            touchProject(session.projectID)
+            navigate(to: .session(resumed.id))
+            return
+        }
+        update(sessionID) {
+            $0.focusedPaneID = target.id
+            $0.layout = $0.layout.updatingPane(target.id) { pane in
+                pane.agentSessionID = chat.id
+                pane.title = chat.title
+            }
+        }
+        touchProject(session.projectID)
+        // A terminal never shown yet starts on the chat when it is; one that
+        // runs restarts on it now.
+        guard let runtime = paneRuntimes[target.id],
+              let pane = self.session(sessionID)?.layout.pane(target.id) else { return }
+        let root = project(for: session).map { NSString(string: $0.root).expandingTildeInPath }
+            ?? FileManager.default.homeDirectoryForCurrentUser.path
+        runtime.reset(launchCommand: effectiveLaunchCommand(for: pane, projectRoot: root))
+        DispatchQueue.main.async { runtime.focus() }
+    }
+
+    /// The default agent when it is Claude Code, with its flags; plain
+    /// `claude` when another agent is the default.
+    private var claudeLaunchCommand: String {
+        if presetUsesClaude, let command = config.agentLaunchCommand { return command }
+        return AgentPreset.claude.command(custom: "") ?? "claude"
+    }
+
+    private func reveal(paneID: String, inSession sessionID: String) {
+        focusPane(sessionID: sessionID, paneID: paneID)
+        navigate(to: .session(sessionID))
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            self?.paneRuntimes[paneID]?.focus()
         }
     }
 
@@ -967,6 +1100,9 @@ final class StudioWorkspace: ObservableObject {
             self?.bump()
         }
         paneRuntimes[pane.id] = runtime
+        // Asked for while a view is drawn: tell the sidebar a beat later
+        // that the session has started.
+        DispatchQueue.main.async { [weak self] in self?.bump() }
         return runtime
     }
 
@@ -1276,11 +1412,7 @@ extension StudioWorkspace {
         }
         guard let session = config.sessions.first(where: { $0.layout.contains(paneID) }) else { return false }
         if isArchived(session.projectID) { unarchiveProject(session.projectID) }
-        focusPane(sessionID: session.id, paneID: paneID)
-        navigate(to: .session(session.id))
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-            self?.paneRuntimes[paneID]?.focus()
-        }
+        reveal(paneID: paneID, inSession: session.id)
         return true
     }
 

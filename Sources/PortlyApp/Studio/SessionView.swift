@@ -223,10 +223,9 @@ private struct SessionToolbar: ToolbarContent {
     var body: some ToolbarContent {
         ToolbarItemGroup {
             ShortcutsToolbarButton()
-            SplitToolbarButton(sessionID: sessionID, axis: .horizontal)
-            SplitToolbarButton(sessionID: sessionID, axis: .vertical)
+            // Splitting and zooming live in each terminal's own header.
+            ChatsToolbarButton(sessionID: sessionID)
             SessionMoreMenu(sessionID: sessionID)
-            ZoomToolbarButton(sessionID: sessionID)
             EnvironmentToolbarButton(sessionID: sessionID)
 
             Button {
@@ -252,25 +251,18 @@ private struct ShortcutsToolbarButton: View {
     }
 }
 
-private struct SplitToolbarButton: View {
+/// The project's past Claude conversations, through `ToolbarPopover` like
+/// the cheat sheet: picking one resumes it in the focused terminal.
+private struct ChatsToolbarButton: View {
     let sessionID: String
-    let axis: SplitAxis
-
-    @ObservedObject private var workspace = StudioWorkspace.shared
 
     var body: some View {
         Button {
-            workspace.split(sessionID: sessionID, axis: axis)
+            ToolbarPopover.toggle(id: "chats") { ChatHistoryPopover(sessionID: sessionID) }
         } label: {
-            NucleoLabel(
-                axis == .horizontal ? "Split Right" : "Split Down",
-                icon: axis == .horizontal ? .splitRight : .splitDown
-            )
+            NucleoLabel("Chats", icon: .chats)
         }
-        .disabled(!workspace.canAddPane(to: sessionID))
-        .help(axis == .horizontal
-            ? "Open a new terminal to the right (⌘D)"
-            : "Open a new terminal below (⇧⌘D)")
+        .help("Past chats of this project: pick one to resume it")
     }
 }
 
@@ -308,23 +300,6 @@ private struct SessionMoreMenu: View {
             NucleoLabel("More", icon: .dots)
         }
         .help("More session actions")
-    }
-}
-
-private struct ZoomToolbarButton: View {
-    let sessionID: String
-
-    @ObservedObject private var workspace = StudioWorkspace.shared
-
-    var body: some View {
-        let session = workspace.session(sessionID)
-        Button {
-            workspace.toggleZoom(sessionID: sessionID)
-        } label: {
-            NucleoLabel(session?.zoomedPaneID == nil ? "Zoom Pane" : "Unzoom", icon: .fullscreen)
-        }
-        .disabled((session?.panes.count ?? 0) < 2)
-        .help("Show only the focused terminal (⇧⌘↩)")
     }
 }
 

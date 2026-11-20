@@ -10,6 +10,8 @@ enum PortlyTypography {
     static let project = Font.system(size: 13, weight: .semibold, design: .rounded)
     static let title = Font.system(size: 17, weight: .semibold, design: .rounded)
     static let label = Font.system(size: 10, weight: .semibold, design: .rounded)
+    /// A second line of prose under a title, smaller than the body.
+    static let caption = Font.system(size: 11.5, weight: .regular, design: .rounded)
     static let metadata = Font.system(size: 10.5, weight: .regular, design: .monospaced)
     static let metric = Font.system(size: 12, weight: .medium, design: .monospaced)
 }

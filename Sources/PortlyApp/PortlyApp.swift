@@ -105,6 +105,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         server.start()
         control = server
         Supervisor.shared.resumeAfterUpdaterRelaunchIfNeeded()
+        // The last run's sessions are put away before any window shows one;
+        // the main window asks again in case it appeared first.
+        StudioWorkspace.shared.prepareSessionsAtLaunch(projects: Supervisor.shared.projects)
         // The AI usage rings: the notch on the screen edge and the sidebar
         // section read from the same store.
         UsageCenter.shared.start()

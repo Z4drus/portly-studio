@@ -74,8 +74,9 @@ the maintainer's Apple ID and team identifier out of every downloaded copy.
 
 - **Coding sessions per project** — each project holds several sessions; a session is 1 to 5
   terminals split right or down (⌘D / ⇧⌘D), resizable, zoomable (⇧⌘↩), with per-session text size
-  (⌘+ / ⌘−). Layouts persist in `~/.config/portly/studio.json` and shells respawn when a session is
-  reopened.
+  (⌘+ / ⌘−). Splitting and zooming sit in each terminal's own header (and its right-click menu), not
+  in the window toolbar. Layouts live in `~/.config/portly/studio.json`; a shell starts the first time
+  its session is opened, never before.
 - **A project in its own window** — right-click a project and choose *Open in Separate Window*, or
   click the ↗ next to its **+**: the project leaves the sidebar for a window you can put on any
   screen. A thin rail of icons on the left switches between the code and each server (its state as a
@@ -103,14 +104,23 @@ the maintainer's Apple ID and team identifier out of every downloaded copy.
   anything. Archiving is state, not a date recomputed at launch: an archived project stays archived
   until you bring it back or one of its servers starts. "Worked on" means a real exchange in a Claude
   conversation, not the bookkeeping Claude Code appends to a transcript every time it is resumed.
-- **Relaunch** — the sessions of the projects in the sidebar respawn at launch and the last selection
-  comes back; an archived project respawns its sessions the moment one is opened. Claude Code panes
-  carry a session id (`--session-id`) and resume their conversation (`--resume`) after a quit or a
-  reboot; a *Reset* button in the pane header starts a fresh chat.
+- **Relaunch** — a launch puts the last run's sessions away instead of waking an agent for each of
+  them: the projects worked on in the last day come back unfolded in the sidebar, each with **one**
+  fresh session that starts (behind the launch screen) only when you open it. Nothing fills the
+  memory until you ask for it. The old behaviour, every session respawned and resumed, is one toggle
+  away in Settings → Code → Relaunch. A *Reset* button in the pane header starts a fresh chat.
+- **Chats** — the *Chats* button in a session's toolbar lists every Claude Code conversation the
+  project has had, however old, under Today / Yesterday / Previous 7 days / Previous 30 days / Older,
+  each by the title Claude Code gave it (or the one you gave it with `/rename`) with the last thing
+  you asked under it. Type to filter, ↑↓ and ↩, or click: the focused Claude terminal restarts on
+  `claude --resume <id>` and the conversation that was there waits in the list in turn. A chat already
+  open in a Portly terminal is shown instead, one an agent is busy in is never cut off (the chat opens
+  in a session of its own), and one Claude Code runs in another terminal is greyed out.
 - **Resume notes** — quitting Portly ends the agents it runs, including one that is busy replacing
   Portly itself. A one-line note left in `~/.config/portly/resume-notes.json`, keyed by Claude
   conversation id (`{"<id>": "The new build is installed, verify it."}`), is handed to that
-  conversation as its first message when it resumes, and deleted as it is read.
+  conversation as its first message when it resumes, and deleted as it is read. The session holding
+  that conversation is the one a launch keeps, and it starts at once.
 - **Option composes characters** — ⌥ types what your layout says it types (`{ } [ ] @ | ~ #` on
   Swiss, German, French and other ISO layouts) instead of acting as Meta. It stays Meta for the keys
   that produce no character, so ⌥← / ⌥→ and ⌥⌫ still move and delete by word.

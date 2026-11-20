@@ -96,11 +96,13 @@ struct StudioSettingsView: View {
             }
 
             Section("Relaunch") {
-                Toggle("Reopen every session at launch and resume its agents", isOn: Binding(
-                    get: { workspace.config.reopenSessionsAtLaunch },
-                    set: { value in workspace.updateSettings { $0.reopenSessionsAtLaunch = value } }
+                Toggle("Bring every session back at launch", isOn: Binding(
+                    get: { workspace.config.restoreSessionsAtLaunch },
+                    set: { value in workspace.updateSettings { $0.restoreSessionsAtLaunch = value } }
                 ))
-                Text("Shells restart at the project root. Claude Code conversations come back with --resume; other agents start fresh.")
+                Text(workspace.config.restoreSessionsAtLaunch
+                    ? "The sessions of the projects in the sidebar respawn at launch and Claude Code resumes each conversation, one agent per terminal."
+                    : "A launch puts the sessions away and gives each project in the sidebar one fresh session, which starts only when you open it. Past conversations wait under Chats in a session's toolbar: pick one to resume it.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -135,7 +137,7 @@ struct StudioSettingsView: View {
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                 }
-                Text("Session layouts persist; shells are respawned when a session is opened again.")
+                Text("Session layouts persist while Portly runs; a shell starts when its session is first opened.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

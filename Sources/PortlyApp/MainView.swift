@@ -31,13 +31,11 @@ struct MainView: View {
     @State private var addingProject = false
     @State private var search = ""
     @State private var doubleClickMonitor: Any?
-    @State private var collapsedProjects: Set<String> = MainView.loadCollapsedProjects()
     /// The project being dragged to a new place in the sidebar.
     @State private var draggingProjectID: String?
     @FocusState private var searchFocused: Bool
 
     private static let lastSelectionKey = "lastSelection"
-    private static let collapsedProjectsKey = "collapsedProjects"
     private static let thingsPanelMargin: CGFloat = 10
 
     /// The env editor and the quick terminal sit left of the Things panel
@@ -137,6 +135,9 @@ struct MainView: View {
             WindowOpener.opener = { openWindow(id: WindowOpener.mainWindowID) }
             agentSetup.refresh()
             systemAccess.refresh()
+            // Before anything is selected: the last run's sessions are put
+            // away and each listed project gets a fresh one.
+            workspace.prepareSessionsAtLaunch(projects: supervisor.projects)
             applyPendingSelection()
             // A destination sent while this window was closed, such as a
             // project window handing its session back.
@@ -147,12 +148,7 @@ struct MainView: View {
             }
             restoreLastSelection()
             syncWorkspaceContext()
-            workspace.prepareSidebarAtLaunch(projects: supervisor.projects)
             installDoubleClickMonitor()
-            // Give the window a beat to appear before respawning every shell.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-                workspace.reopenSessionsAtLaunchIfNeeded()
-            }
         }
         .onDisappear {
             if let doubleClickMonitor { NSEvent.removeMonitor(doubleClickMonitor) }
@@ -266,7 +262,7 @@ struct MainView: View {
             }
         }
         .listStyle(.sidebar)
-        .animation(Motion.state, value: collapsedProjects)
+        .animation(Motion.state, value: workspace.collapsedProjects)
         .overlay {
             if showEmptySearch {
                 ContentUnavailableView.search(text: search)
@@ -308,7 +304,7 @@ struct MainView: View {
         let sessions = workspace.sessions(for: project.id)
         let childCount = project.servers.count + sessions.count
         // A search is a request to see matches: never hide them.
-        let isCollapsed = collapsedProjects.contains(project.id) && !SidebarSearch.isActive(search)
+        let isCollapsed = workspace.collapsedProjects.contains(project.id) && !SidebarSearch.isActive(search)
         Section {
             ProjectHeader(
                 project: project,
@@ -443,7 +439,7 @@ struct MainView: View {
     /// Back in the sidebar, expanded so its servers show (none is started),
     /// with a coding session open on it.
     private func bringBack(_ project: Project) {
-        if collapsedProjects.contains(project.id) { toggleCollapsed(project.id) }
+        if workspace.collapsedProjects.contains(project.id) { workspace.collapsedProjects.remove(project.id) }
         search = ""
         let session = workspace.revealProject(project.id)
         selection = .session(session.id)
@@ -670,17 +666,12 @@ struct MainView: View {
 
     // MARK: - Collapsed projects
 
-    private static func loadCollapsedProjects() -> Set<String> {
-        Set(UserDefaults.standard.stringArray(forKey: collapsedProjectsKey) ?? [])
-    }
-
     private func toggleCollapsed(_ projectID: String) {
-        if collapsedProjects.contains(projectID) {
-            collapsedProjects.remove(projectID)
+        if workspace.collapsedProjects.contains(projectID) {
+            workspace.collapsedProjects.remove(projectID)
         } else {
-            collapsedProjects.insert(projectID)
+            workspace.collapsedProjects.insert(projectID)
         }
-        UserDefaults.standard.set(Array(collapsedProjects).sorted(), forKey: Self.collapsedProjectsKey)
     }
 
     // MARK: - Selection memory & sidebar double-click
@@ -709,6 +700,11 @@ struct MainView: View {
         case "session":
             if let id = parts.last, let session = workspace.session(id), !workspace.isArchived(session.projectID) {
                 selection = .session(id)
+            } else if let id = parts.last, let projectID = workspace.projectOfPutAwaySession(id),
+                      storedProject(projectID) != nil, !workspace.isArchived(projectID) {
+                // Its session was put away at launch: back on the project,
+                // where nothing starts until a session is opened.
+                selection = .project(projectID)
             }
         case "server":
             if let id = parts.last, let project = supervisor.project(containing: id), !workspace.isArchived(project.id) {
@@ -873,8 +869,8 @@ struct MainView: View {
     private func revealInSidebar(_ destination: Selection) {
         switch destination {
         case .session, .server:
-            if let projectID = workspace.projectID(of: destination), collapsedProjects.contains(projectID) {
-                toggleCollapsed(projectID)
+            if let projectID = workspace.projectID(of: destination), workspace.collapsedProjects.contains(projectID) {
+                workspace.collapsedProjects.remove(projectID)
             }
         default:
             break
@@ -1228,7 +1224,7 @@ private struct SessionRow: View {
                         .lineLimit(1)
                         .help("Double-click to rename")
                 }
-                Text(subtitle(focusedTitle: focused?.title))
+                Text(workspace.hasStarted(session) ? subtitle(focusedTitle: focused?.title) : "Starts when opened")
                     .font(PortlyTypography.metadata)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
